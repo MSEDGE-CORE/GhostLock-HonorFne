@@ -1,0 +1,16 @@
+# Windows checkout safety: shell scripts MUST stay LF (CRLF -> "bad interpreter").
+* text=auto
+*.sh text eol=lf
+
+# Binaries: never touch
+*.ko binary
+*.apk binary
+*.zip binary
+ksud binary
+magiskpolicy binary
+ghostlock binary
+e binary
+load_ko binary
+kmsg_dumper binary
+fne_syms.txt binary
+kallsyms_names binary

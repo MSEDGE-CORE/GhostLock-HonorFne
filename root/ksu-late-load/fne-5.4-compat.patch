@@ -1,0 +1,551 @@
+diff --git a/kernel/feature/kernel_umount.c b/kernel/feature/kernel_umount.c
+index d77494df..c6cb6fc9 100644
+--- a/kernel/feature/kernel_umount.c
++++ b/kernel/feature/kernel_umount.c
+@@ -10,6 +10,11 @@
+ #include <linux/path.h>
+ #include <linux/printk.h>
+ #include <linux/types.h>
++#include <linux/version.h>
++#include <linux/string.h>
++#include <linux/syscalls.h>
++#include <linux/ptrace.h>
++#include <linux/uaccess.h>
+ 
+ #include "feature/kernel_umount.h"
+ #include "klog.h" // IWYU pragma: keep
+@@ -64,6 +69,25 @@ static const struct ksu_feature_handler webview_zygote_umount_handler = {
+     .set_handler = webview_zygote_umount_feature_set,
+ };
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++/* 5.4: path_umount() does not exist; ksys_umount() re-resolves the path from
++ * a __user string. We run in the caller's user context, so copy the mount
++ * point below its user stack pointer. */
++static void ksu_umount_mnt(const char *mnt, struct path *path, int flags)
++{
++    size_t len = strlen(mnt) + 1;
++    char __user *user_mnt = (char __user *)current_user_stack_pointer() - len;
++    int err;
++
++    (void)path;
++    if (copy_to_user(user_mnt, mnt, len))
++        return;
++    err = ksys_umount(user_mnt, flags);
++    if (err) {
++        pr_info("umount %s failed: %d\n", mnt, err);
++    }
++}
++#else
+ extern int path_umount(struct path *path, int flags);
+ 
+ static void ksu_umount_mnt(const char *mnt, struct path *path, int flags)
+@@ -73,6 +97,7 @@ static void ksu_umount_mnt(const char *mnt, struct path *path, int flags)
+         pr_info("umount %s failed: %d\n", mnt, err);
+     }
+ }
++#endif
+ 
+ static void try_umount(const char *mnt, int flags)
+ {
+diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
+index fbb6c44f..95053fb0 100644
+--- a/kernel/feature/selinux_hide.c
++++ b/kernel/feature/selinux_hide.c
+@@ -1,3 +1,5 @@
++#include <linux/version.h>
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+ #include "selinux_hide.h"
+ #include "infra/symbol_resolver.h"
+ #include "linux/jump_label.h"
+@@ -1144,3 +1146,27 @@ allow:
+     goto out;
+ }
+ #endif
++
++#else /* < 5.11: selinux hide relies on the 5.11+ policy pointer swap. */
++
++void ksu_selinux_hide_init()
++{
++}
++
++void ksu_selinux_hide_exit()
++{
++}
++
++void ksu_selinux_hide_drop_backup_if_unused()
++{
++}
++
++void ksu_selinux_hide_handle_second_stage()
++{
++}
++
++void ksu_selinux_hide_handle_post_fs_data()
++{
++}
++
++#endif /* 5.11 */
+diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
+index 1ba7b58e..c6b2c21f 100644
+--- a/kernel/feature/sucompat.c
++++ b/kernel/feature/sucompat.c
+@@ -5,7 +5,7 @@
+ #include <linux/preempt.h>
+ #include <linux/printk.h>
+ #include <linux/mm.h>
+-#include <linux/pgtable.h>
++#include <asm/pgtable.h>
+ #include <linux/uaccess.h>
+ #include <asm/current.h>
+ #include <linux/cred.h>
+@@ -15,6 +15,10 @@
+ #include <linux/sched/task_stack.h>
+ #include <linux/ptrace.h>
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
++#define strncpy_from_user_nofault strncpy_from_unsafe_user
++#endif
++
+ #include "arch.h"
+ #include "policy/allowlist.h"
+ #include "policy/feature.h"
+diff --git a/kernel/hook/arm64/patch_memory.c b/kernel/hook/arm64/patch_memory.c
+index 670f3bd0..ba24eb66 100644
+--- a/kernel/hook/arm64/patch_memory.c
++++ b/kernel/hook/arm64/patch_memory.c
+@@ -12,7 +12,13 @@
+ #include "linux/uaccess.h"
+ #include "linux/stop_machine.h"
+ #include "asm/cacheflush.h"
++#include "infra/symbol_resolver.h"
+ #include "asm-generic/fixmap.h"
++#include <linux/version.h>
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
++#define copy_to_kernel_nofault probe_kernel_write
++#endif
+ 
+ // https://github.com/fuqiuluo/ovo/blob/f7da411458e87d32438dc14fce5a3313ed0c967e/ovo/mmuhack.c#L21
+ 
+@@ -128,6 +134,20 @@ struct patch_text_info {
+ // not a big problem because we are in stop_machine.
+ // ^1: https://github.com/NothingOSS/android_kernel_device_modules_6.1_nothing_mt6878/blob/957dac185efe46cbf6336b0fff9516d84c8cd78f/drivers/misc/mediatek/mkp/mkp_main.c#L29
+ // ^2: https://github.com/torvalds/linux/commit/c0eb315ad9719e41ce44708455cc69df7ac9f3f8
++// kimage_voffset fallback: kernel-image VAs satisfy phys = virt - kimage_voffset.
++// Cached once; kallsyms resolution is pure memory reads, stop_machine safe.
++static unsigned long ksu_kimage_voffset(void)
++{
++    static unsigned long kvo;
++    static bool tried;
++    if (!tried) {
++        unsigned long *sym = (unsigned long *)ksu_resolve_symbol_for_functable_hook("kimage_voffset");
++        tried = true;
++        kvo = sym ? *sym : 0;
++    }
++    return kvo;
++}
++
+ static int ksu_patch_text_nosync(void *dst, void *src, size_t len, int flags)
+ {
+     pr_debug("patch dst=0x%lx src=0x%lx len=%ld\n", (unsigned long)dst, (unsigned long)src, len);
+@@ -137,6 +157,17 @@ static int ksu_patch_text_nosync(void *dst, void *src, size_t len, int flags)
+ 
+     int phy_err;
+     unsigned long phy = phys_from_virt(p, &phy_err);
++    if (phy_err) {
++        /* init_mm walk failed (vendor pgd/mm_struct layout drift). For
++         * kernel-image VAs fall back to the linear image mapping:
++         * phys = virt - kimage_voffset, bounded by max RAM. */
++        unsigned long kvo = ksu_kimage_voffset();
++        if (kvo && p > kvo && p - kvo < 0x800000000UL) {
++            phy = p - kvo;
++            phy_err = 0;
++            pr_info("phy walk failed for 0x%lx, kimage_voffset fallback: 0x%lx\n", p, phy);
++        }
++    }
+     if (phy_err) {
+         ret = phy_err;
+         pr_err("failed to find phy addr for patch dst addr 0x%lx\n", p);
+diff --git a/kernel/hook/arm64/syscall_hook.c b/kernel/hook/arm64/syscall_hook.c
+index f8d052c3..fc2840a6 100644
+--- a/kernel/hook/arm64/syscall_hook.c
++++ b/kernel/hook/arm64/syscall_hook.c
+@@ -217,6 +217,13 @@ void __init ksu_syscall_hook_init(void)
+ 
+     ksu_dispatcher_nr = ni_slot;
+     ksu_syscall_table_hook(ksu_dispatcher_nr, (syscall_fn_t)ksu_syscall_dispatcher, NULL);
++    if (READ_ONCE(ksu_syscall_table[ksu_dispatcher_nr]) != (syscall_fn_t)ksu_syscall_dispatcher) {
++        /* Fail-closed: the slot still points at ni_syscall; the rewrite
++         * must stay off or marked processes get -ENOSYS. Hooks inert. */
++        pr_err("dispatcher patch FAILED at slot %d, syscall rewrite disabled\n", ksu_dispatcher_nr);
++        ksu_dispatcher_nr = -1;
++        return;
++    }
+     pr_info("dispatcher installed at slot %d\n", ksu_dispatcher_nr);
+ }
+ 
+diff --git a/kernel/hook/syscall_hook_manager.c b/kernel/hook/syscall_hook_manager.c
+index e5b179ea..726ae484 100644
+--- a/kernel/hook/syscall_hook_manager.c
++++ b/kernel/hook/syscall_hook_manager.c
+@@ -87,6 +87,8 @@ static int syscall_unregfunc_handler(struct kretprobe_instance *ri, struct pt_re
+     return 0;
+ }
+ 
++static bool sys_enter_tp_registered = false;
++
+ static struct kretprobe *syscall_regfunc_rp = NULL;
+ static struct kretprobe *syscall_unregfunc_rp = NULL;
+ #endif
+@@ -126,6 +128,16 @@ void __init ksu_syscall_hook_manager_init(void)
+     int ret;
+     pr_info("hook_manager: ksu_hook_manager_init called\n");
+ 
++    if (ksu_dispatcher_nr < 0) {
++        /* Fail-closed: without a working dispatcher the sys_enter rewrite
++         * would turn every hooked syscall of marked processes into
++         * -ENOSYS. Keep syscall hooks inactive instead. */
++        pr_err("hook_manager: dispatcher unavailable, syscall hooks inactive\n");
++        ksu_setuid_hook_init();
++        ksu_sucompat_init();
++        return;
++    }
++
+ #ifdef CONFIG_KRETPROBES
+     syscall_regfunc_rp = init_kretprobe("syscall_regfunc", syscall_regfunc_handler);
+     syscall_unregfunc_rp = init_kretprobe("syscall_unregfunc", syscall_unregfunc_handler);
+@@ -146,6 +158,7 @@ void __init ksu_syscall_hook_manager_init(void)
+     if (ret) {
+         pr_err("hook_manager: failed to register sys_enter tracepoint: %d\n", ret);
+     } else {
++        sys_enter_tp_registered = true;
+         pr_info("hook_manager: sys_enter tracepoint registered\n");
+     }
+ #endif
+@@ -158,9 +171,11 @@ void __exit ksu_syscall_hook_manager_exit(void)
+ {
+     pr_info("hook_manager: ksu_hook_manager_exit called\n");
+ #ifdef CONFIG_HAVE_SYSCALL_TRACEPOINTS
+-    unregister_trace_sys_enter(ksu_sys_enter_handler, NULL);
+-    tracepoint_synchronize_unregister();
+-    pr_info("hook_manager: sys_enter tracepoint unregistered\n");
++    if (sys_enter_tp_registered) {
++        unregister_trace_sys_enter(ksu_sys_enter_handler, NULL);
++        tracepoint_synchronize_unregister();
++        pr_info("hook_manager: sys_enter tracepoint unregistered\n");
++    }
+ #endif
+ 
+ #ifdef CONFIG_KRETPROBES
+diff --git a/kernel/infra/file_wrapper.c b/kernel/infra/file_wrapper.c
+index 66ea2958..a14ba2c3 100644
+--- a/kernel/infra/file_wrapper.c
++++ b/kernel/infra/file_wrapper.c
+@@ -448,11 +448,18 @@ static struct inode *ksu_anon_inode_make_secure_inode(const char *name, const st
+     if (IS_ERR(inode))
+         return inode;
+     inode->i_flags &= ~S_PRIVATE;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
+     error = security_inode_init_security_anon(inode, &qname, context_inode);
+     if (error) {
+         iput(inode);
+         return ERR_PTR(error);
+     }
++#else
++    // 5.4: LSM hook absent; anon inode keeps default label.
++    error = 0;
++    (void)qname;
++    (void)context_inode;
++#endif
+     return inode;
+ }
+ 
+diff --git a/kernel/infra/seccomp_cache.c b/kernel/infra/seccomp_cache.c
+index a9d2b634..3938e7df 100644
+--- a/kernel/infra/seccomp_cache.c
++++ b/kernel/infra/seccomp_cache.c
+@@ -8,6 +8,22 @@
+ #include "klog.h" // IWYU pragma: keep
+ #include "infra/seccomp_cache.h"
+ 
++/*
++ * 5.4: kernel seccomp has no per-syscall action cache (added in 5.17),
++ * so there is nothing to clear/allow. Keep no-op stubs for the callers.
++ */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
++
++void ksu_seccomp_clear_cache(struct seccomp_filter *filter, int nr)
++{
++}
++
++void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int nr)
++{
++}
++
++#else /* >= 5.17 */
++
+ struct action_cache {
+     DECLARE_BITMAP(allow_native, SECCOMP_ARCH_NATIVE_NR);
+ #ifdef SECCOMP_ARCH_COMPAT
+@@ -63,3 +79,5 @@ void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int nr)
+     }
+ #endif
+ }
++
++#endif /* < 5.17 */
+diff --git a/kernel/infra/su_mount_ns.c b/kernel/infra/su_mount_ns.c
+index 0d459215..4120c6a7 100644
+--- a/kernel/infra/su_mount_ns.c
++++ b/kernel/infra/su_mount_ns.c
+@@ -13,6 +13,8 @@
+ #include <linux/syscalls.h>
+ #include <linux/task_work.h>
+ #include <linux/version.h>
++#include <linux/ptrace.h>
++#include <linux/uaccess.h>
+ #include <uapi/linux/mount.h>
+ 
+ #include "arch.h"
+@@ -148,7 +150,19 @@ static void ksu_mnt_ns_individual(void)
+     // make root mount private
+     struct path root_path;
+     get_fs_root(current->fs, &root_path);
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++    // 5.4: no path_mount(); ksys_mount() re-resolves the path from a __user
++    // dir_name. We run in the caller's user context, so copy "/" below its SP.
++    const char root_dir[] = "/";
++    char __user *root_user = (char __user *)current_user_stack_pointer() - sizeof(root_dir);
++    int pm_ret;
++    if (copy_to_user(root_user, root_dir, sizeof(root_dir)))
++        pm_ret = -EFAULT;
++    else
++        pm_ret = ksys_mount(NULL, root_user, NULL, MS_PRIVATE | MS_REC, NULL);
++#else
+     int pm_ret = path_mount(NULL, &root_path, NULL, MS_PRIVATE | MS_REC, NULL);
++#endif
+     path_put(&root_path);
+ 
+     if (pm_ret < 0) {
+diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
+index 512b9929..8bc8bc46 100644
+--- a/kernel/manager/pkg_observer.c
++++ b/kernel/manager/pkg_observer.c
+@@ -35,9 +35,23 @@ static int ksu_handle_inode_event(struct fsnotify_mark *mark, u32 mask, struct i
+     return 0;
+ }
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++/* 5.4: no handle_inode_event hook; adapter to the old handle_event signature. */
++static int ksu_handle_event(struct fsnotify_group *group, struct inode *inode, u32 mask, const void *data,
++                            int data_type, const struct qstr *file_name, u32 cookie,
++                            struct fsnotify_iter_info *iter_info)
++{
++    return ksu_handle_inode_event(NULL, mask, NULL, NULL, file_name, cookie);
++}
++
++static const struct fsnotify_ops ksu_ops = {
++    .handle_event = ksu_handle_event,
++};
++#else
+ static const struct fsnotify_ops ksu_ops = {
+     .handle_inode_event = ksu_handle_inode_event,
+ };
++#endif
+ 
+ static int add_mark_on_inode(struct inode *inode, u32 mask, struct fsnotify_mark **out)
+ {
+diff --git a/kernel/policy/allowlist.c b/kernel/policy/allowlist.c
+index 8cf50d6a..e9abbe2f 100644
+--- a/kernel/policy/allowlist.c
++++ b/kernel/policy/allowlist.c
+@@ -17,7 +17,13 @@
+ #include <linux/hashtable.h>
+ #include <linux/kref.h>
+ 
++#include <linux/sched/task.h>
+ #include "klog.h" // IWYU pragma: keep
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 14, 0)
++/* 5.4: task_work_add takes a bool "notify" instead of the TWA_* enum. */
++#define TWA_RESUME true
++#endif
+ #include "ksu.h"
+ #include "feature/kernel_umount.h"
+ #include "runtime/ksud_boot.h"
+diff --git a/kernel/policy/app_profile.c b/kernel/policy/app_profile.c
+index 518ef414..662072f9 100644
+--- a/kernel/policy/app_profile.c
++++ b/kernel/policy/app_profile.c
+@@ -101,7 +101,9 @@ static void disable_seccomp(void)
+ 
+     current->seccomp.mode = 0;
+     current->seccomp.filter = NULL;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
+     atomic_set(&current->seccomp.filter_count, 0);
++#endif
+     spin_unlock_irq(&current->sighand->siglock);
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+@@ -118,7 +120,13 @@ static void disable_seccomp(void)
+     fake->sighand = NULL;
+ #endif
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
++    /* 5.4: seccomp_filter_release() is 5.9+; put_seccomp_filter() drops the
++     * fake's copied filter reference (kernel/seccomp.c). */
++    put_seccomp_filter(fake);
++#else
+     seccomp_filter_release(fake);
++#endif
+     kfree(fake);
+ }
+ 
+diff --git a/kernel/runtime/ksud_integration.c b/kernel/runtime/ksud_integration.c
+index 5bf84cb6..de53b689 100644
+--- a/kernel/runtime/ksud_integration.c
++++ b/kernel/runtime/ksud_integration.c
+@@ -20,6 +20,12 @@
+ #include <linux/uio.h>
+ #include <linux/stat.h>
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
++#define strncpy_from_user_nofault strncpy_from_unsafe_user
++#define copy_from_user_nofault probe_user_read
++#define copy_to_user_nofault probe_user_write
++#endif
++
+ #include "arch.h"
+ #include "klog.h" // IWYU pragma: keep
+ #include "ksu.h"
+diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+index 69f37ba6..31646aa3 100644
+--- a/kernel/selinux/rules.c
++++ b/kernel/selinux/rules.c
+@@ -1,3 +1,5 @@
++#include <linux/version.h>
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+ #include "linux/rcupdate.h"
+ #include "security.h"
+ #include <linux/uaccess.h>
+@@ -606,3 +608,26 @@ out_free:
+ 
+     return ret;
+ }
++
++#else /* < 5.11: no struct selinux_policy / RCU policy swap; rules are
++        * pre-injected via magiskpolicy --live before module load. */
++
++#include <linux/types.h>
++#include <linux/compiler_types.h>
++#include <linux/errno.h>
++
++int handle_sepolicy(void __user *user_data, u64 data_len)
++{
++    return -EOPNOTSUPP;
++}
++
++void apply_kernelsu_rules()
++{
++}
++
++int ksu_install_backup_sepolicy(const char *path)
++{
++    return -EOPNOTSUPP;
++}
++
++#endif /* 5.11 */
+diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
+index 072f1e8d..0a5b184f 100644
+--- a/kernel/selinux/sepolicy.c
++++ b/kernel/selinux/sepolicy.c
+@@ -540,6 +540,10 @@ static const struct hashtab_key_params filenametr_key_params = {
+ static bool add_filename_trans(struct policydb *db, const char *s, const char *t, const char *c, const char *d,
+                                const char *o)
+ {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
++    /* 5.4 uses the legacy filename_trans layout; not supported. */
++    return false;
++#else
+     struct type_datum *src, *tgt, *def;
+     struct class_datum *cls;
+     struct filename_trans_key *new_key = NULL;
+@@ -623,6 +627,7 @@ free_trans:
+     kfree(trans);
+ out:
+     return false;
++#endif /* >= 5.9 */
+ }
+ 
+ static bool add_genfscon(struct policydb *db, const char *fs_name, const char *path, const char *context)
+@@ -894,6 +899,8 @@ bool ksu_genfscon(struct policydb *db, const char *fs_name, const char *path, co
+ 
+ // ======== sepolicy ========
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
++
+ void ksu_destroy_sepolicy(struct selinux_policy *pol)
+ {
+     policydb_destroy(&pol->policydb);
+@@ -986,3 +993,5 @@ out_free_data:
+ 
+     return ERR_PTR(ret);
+ }
++
++#endif /* >= 5.11 */
+diff --git a/kernel/sulog/event.c b/kernel/sulog/event.c
+index 51d6fa84..31b79e20 100644
+--- a/kernel/sulog/event.c
++++ b/kernel/sulog/event.c
+@@ -2,7 +2,6 @@
+ #include <linux/compat.h>
+ #include <linux/cred.h>
+ #include <linux/gfp.h>
+-#include <linux/minmax.h>
+ #include <linux/overflow.h>
+ #include <linux/sched/signal.h>
+ #include <linux/slab.h>
+@@ -10,6 +9,15 @@
+ #include <linux/uaccess.h>
+ 
+ #include <linux/version.h>
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
++#include <linux/minmax.h>
++#else
++#include <linux/kernel.h> /* 5.4: min/max live here */
++#endif
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
++#define strncpy_from_user_nofault strncpy_from_unsafe_user
++#endif
+ #if defined(__x86_64__) && LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0)
+ #include <linux/mm.h>
+ #endif
+diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
+index 68c333f1..1c967a90 100644
+--- a/kernel/supercall/dispatch.c
++++ b/kernel/supercall/dispatch.c
+@@ -4,6 +4,8 @@
+ #include <linux/uaccess.h>
+ #include <linux/version.h>
+ #include <linux/thread_info.h>
++#include <linux/sched/signal.h>
++#include <linux/sched/task.h>
+ #include "uapi/supercall.h"
+ #include "supercall/internal.h"
+ #include "arch.h" // IWYU pragma: keep
+diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
+index 3dfd4abf..127f03a4 100644
+--- a/kernel/supercall/supercall.c
++++ b/kernel/supercall/supercall.c
+@@ -11,6 +11,10 @@
+ #include <linux/uaccess.h>
+ #include <linux/version.h>
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 14, 0)
++#define TWA_RESUME true
++#endif
++
+ #include "uapi/supercall.h"
+ #include "supercall/internal.h"
+ #include "arch.h"

@@ -1,0 +1,7 @@
+*.o
+*.exe
+ghostlock
+ace6t_exploit
+bash.exe.stackdump
+
+__pycache__/

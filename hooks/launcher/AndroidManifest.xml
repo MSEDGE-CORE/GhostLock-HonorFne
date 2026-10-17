@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.wxz.hnlauncherport">
+
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34"/>
+
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"/>
+
+    <application
+        android:label="HnLauncher Motion Port"
+        android:allowBackup="false">
+        <meta-data android:name="xposedmodule" android:value="true"/>
+        <meta-data android:name="xposeddescription"
+            android:value="Attach MotionEngine return-home, stacked recents, spring follow, parallel click and transition blur to HnLauncher 14 (FNE)"/>
+        <meta-data android:name="xposedminversion" android:value="93"/>
+        <meta-data android:name="xposedscope" android:resource="@array/xposed_scope"/>
+        <activity
+            android:name="com.wxz.hnlauncherport.SettingsActivity"
+            android:exported="true"
+            android:label="HnLauncherPort">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
