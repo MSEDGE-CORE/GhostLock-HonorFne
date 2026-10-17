@@ -60,7 +60,7 @@ public final class OneStepThresholds {
                             int h = XposedHelpers.getIntField(param.thisObject, "mScreenHeight");
                             int w = XposedHelpers.getIntField(param.thisObject, "mScreenWidth");
                             boolean landscape = w > h;
-                            float shapeYRatio = landscape ? 0.3f : 0.5f;
+                            float shapeYRatio = landscape ? 0.4f : 0.5f;
                             XposedHelpers.setFloatField(param.thisObject, "mShowBgHotY", h * 0.8f);
                             XposedHelpers.setFloatField(param.thisObject, "mShowIconHotY", h * 0.75f);
                             XposedHelpers.setFloatField(param.thisObject, "mScaleHotY", h * 0.75f);

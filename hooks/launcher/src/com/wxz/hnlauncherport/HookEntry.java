@@ -62,5 +62,15 @@ public class HookEntry implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             Port.log("AdvUnlockAnim install failed", t);
         }
+        try {
+            com.wxz.hnlauncherport.folder.FolderBgBlur.install(lpparam.classLoader);
+        } catch (Throwable t) {
+            Port.log("FolderBgBlur install failed", t);
+        }
+        try {
+            com.wxz.hnlauncherport.folder.FolderOpenSpeed.install(lpparam.classLoader);
+        } catch (Throwable t) {
+            Port.log("FolderOpenSpeed install failed", t);
+        }
     }
 }

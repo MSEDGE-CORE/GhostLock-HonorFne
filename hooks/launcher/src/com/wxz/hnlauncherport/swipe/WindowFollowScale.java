@@ -74,12 +74,43 @@ import de.robv.android.xposed.XposedHelpers;
  *     window with a live finger keeps the spring as the renderer while the
  *     matrix surgery warps its frames to our trajectory.
  *
+ *  6. Landscape anchor trajectory (v7.5, 锚点优化 landscape): with a
+ *     landscape app over the portrait launcher the TVS matrix ends with
+ *     applyWindowToHomeRotation = postDisplayRotation(deltaRotation(rec,
+ *     disp)) - its output (cur, and our injected from-rect sLastDes) is
+ *     the VISUAL landscape frame (2400x1080) while the finger (OIC
+ *     events), the reference formula and taskRect stay PANEL (1080x2400;
+ *     gesture nav keeps getDisplacement on the panel y-axis, so stock
+ *     landscape tracking is panel-driven). The whole trajectory math runs
+ *     in panel - referenceRect unchanged - with cur inverse-rotated to
+ *     panel (curS) for the anchor/grab/blend, the panel result (desS)
+ *     rotated to visual for the matrix surgery / sLastDes / the visual
+ *     velocity sample, and (C) writing the panel-remapped velocity into
+ *     mTransSpeedX/Y (panel consumers). delta 2 or reflection failure
+ *     keeps stock geometry.
+ *
+ *  7. Landscape anchor position (v7.8, 锚点优化 landscape): the v7.5
+ *     rotated-portrait anchor kept the portrait convergence (top ->
+ *     FAR*h = 0.2h panel), which rotated to visual 0.2W_v from the FAR
+ *     edge - the anchor sat at the wrong end of the landscape swipe
+ *     ("似乎是根据竖屏的坐标", 横向映射错). User spec (long/short edge):
+ *     the SHORT edge is anchored at 0.3 against gravity (visual y 324,
+ *     same physical point both directions; panel x 0.7w rot=1 / 0.3w
+ *     rot=3); the LONG edge is finger-following - the portrait-X
+ *     analog (top = fy - sigma*downY) - the card tracks the swipe and
+ *     rests at the finger's position (user: "缺少长边方向的位移"). The
+ *     landscape swipe distance maps into mY x2 (user spec) so sigma
+ *     hits the floor at roughly half the portrait travel. The portrait
+ *     formula is byte-identical.
+ *
  * Trajectory (reference-faithful, F = FarPoint = 0.2, raw-finger driven):
  *   dy = fingerY - downY; mY = H + dy
  *   mH = (mY - F*H) * (H / (H - F*H))
  *   mH < 0.4H: a=0.3H soft resistance; mH <= 0.05H floor
  *   mH > 1.0H: a=0.1H soft overshoot; mH >= 1.1H cap
  *   sigma = mH/H; left = fingerX - sigma*downX; top = F*H*(1-sigma)
+ *   landscape (rot!=0): mY = H + 2*dy; cx = ax + (0.5W-ax)*sigma,
+ *     ax=0.7W/0.3W by rot; left = cx - sigma*W/2; top = fy - sigma*downY
  */
 public final class WindowFollowScale {
     private static final String TAG = "WindowFollowScale";
@@ -148,6 +179,10 @@ public final class WindowFollowScale {
     private static volatile long sLastDesTime;
     private static final RectF sRelDes = new RectF();
     private static volatile boolean sRelDesValid;
+    /** Live trajectory rotation (rotOf): 0 panel==visual, 1/3 landscape delta. */
+    private static volatile int sTrajRot;
+    /** Release endTarget was RECENTS (enter recents): skip our release blend. */
+    private static volatile boolean sEndRecents;
     // interrupt anchor (v7 #4) + RT grab mode (v7.4.1)
     private static boolean sAncValid;
     private static long sAncTime;
@@ -606,19 +641,24 @@ public final class WindowFollowScale {
                 if (w <= 0 || h <= 0) {
                     return;
                 }
-                // Landscape (v7): the TVS matrix ends with
-                // applyWindowToHomeRotation, which appends a rotation only
-                // when recentsActivityRotation != displayRotation. With
-                // matching rotations the matrix is plain screen space (this
-                // covers portrait AND a rotated launcher), so the
-                // dimension-generic reference formula runs unchanged. With a
-                // mismatch the spaces diverge - keep stock geometry.
-                if (!rotationConsistent(tvs)) {
+                // Landscape (v7.5): the TVS matrix ends with
+                // applyWindowToHomeRotation = postDisplayRotation(delta-
+                // Rotation(recentsActivityRotation, displayRotation)).
+                // delta 0: plain panel space (portrait) - the reference
+                // formula runs unchanged. delta 1/3 (landscape app over
+                // the portrait launcher): the matrix output is the VISUAL
+                // landscape frame while the finger/reference/taskRect stay
+                // PANEL - the trajectory runs in panel and is rotated to
+                // visual at the boundaries (curS / toVisual below). delta
+                // 2 or reflection failure keeps stock geometry.
+                int rot = rotOf(tvs);
+                if (rot < 0) {
                     carTarget(0f, 0f, now);
                     resetAnchor();
-                    dbgWfs("rot-mismatch stock");
+                    dbgWfs("rot-unsupported stock");
                     return;
                 }
+                sTrajRot = rot;
                 if (fSplitBounds.get(tvs) != null) {
                     carTarget(0f, 0f, now); // split screen keeps stock geometry
                     return;
@@ -637,22 +677,37 @@ public final class WindowFollowScale {
                 if (cur.width() < 1f || cur.height() < 1f) {
                     return;
                 }
+                // panel-space twin of cur (identity when rot == 0): the
+                // anchor/grab/blend math below is panel-native.
+                RectF curS = rot == 0 ? cur : toPanel(cur, rot, w, h);
 
-                RectF des;
+                RectF desS;
                 float t = 1f;
                 if (endBlend) {
-                    // Release: blend our snapshotted rect into the stock
-                    // settle path (position AND size), smoothstepped.
-                    t = 1f - (float) (now - sEndTime) / (float) END_BLEND_MS;
-                    t = clamp01(t);
-                    des = lerp(cur, sRelDes, t * t * (3f - 2f * t));
-                    dbgWfs("REL t=" + t + " udAge=" + udAge);
+                    if (sEndRecents) {
+                        // RECENTS release (enter recents): the stock settle is
+                        // already instant (DisableEnterRecentsAnim zeroes the
+                        // shift duration), so our 250ms release blend would be
+                        // the only thing still gliding the main card. Skip it:
+                        // snap straight to the stock rect (jump to end).
+                        t = 0f;
+                        desS = new RectF(curS);
+                        dbgWfs("REL instant (recents) udAge=" + udAge);
+                    } else {
+                        // Release: blend our snapshotted rect into the stock
+                        // settle path (position AND size), smoothstepped.
+                        t = 1f - (float) (now - sEndTime) / (float) END_BLEND_MS;
+                        t = clamp01(t);
+                        RectF relS = rot == 0 ? sRelDes : toPanel(sRelDes, rot, w, h);
+                        desS = lerp(curS, relS, t * t * (3f - 2f * t));
+                        dbgWfs("REL t=" + t + " udAge=" + udAge);
+                    }
                 } else {
                     if (!sDownSeen) {
                         carTarget(0f, 0f, now);
                         return;
                     }
-                    RectF r = referenceRect(w, h);
+                    RectF r = referenceRect(w, h, rot);
                     // Interrupt anchor (v7 #4): blend from the animation's
                     // current rect (cur - may be mid-flight on interrupted
                     // launch/settle) into the finger-driven trajectory.
@@ -668,19 +723,19 @@ public final class WindowFollowScale {
                         sAncTime = now;
                         sAncGrab = rtTakeover;
                         if (sAncGrab) {
-                            sAncDx = cur.centerX() - r.centerX();
-                            sAncDy = cur.centerY() - r.centerY();
-                            sAncDsig = (cur.height() - r.height()) / (float) h;
-                            sAncDsigW = (cur.width() - r.width()) / (float) w;
+                            sAncDx = curS.centerX() - r.centerX();
+                            sAncDy = curS.centerY() - r.centerY();
+                            sAncDsig = (curS.height() - r.height()) / (float) h;
+                            sAncDsigW = (curS.width() - r.width()) / (float) w;
                             dbgWfs("ANC grab dx=" + ((int) sAncDx)
                                     + " dy=" + ((int) sAncDy)
                                     + " dsig=" + sAncDsig
                                     + " dsigW=" + sAncDsigW);
                         } else {
-                            sAncL = cur.left - r.left;
-                            sAncT = cur.top - r.top;
-                            sAncR = cur.right - r.right;
-                            sAncB = cur.bottom - r.bottom;
+                            sAncL = curS.left - r.left;
+                            sAncT = curS.top - r.top;
+                            sAncR = curS.right - r.right;
+                            sAncB = curS.bottom - r.bottom;
                             if (Math.abs(sAncL) < 1f && Math.abs(sAncT) < 1f
                                     && Math.abs(sAncR) < 1f && Math.abs(sAncB) < 1f) {
                                 sAncL = 0f;
@@ -716,16 +771,19 @@ public final class WindowFollowScale {
                         float halfH = sig * h / 2f;
                         float cx = r.centerX() + sAncDx * kg;
                         float cy = r.centerY() + sAncDy * kg;
-                        des = new RectF(cx - halfW, cy - halfH,
+                        desS = new RectF(cx - halfW, cy - halfH,
                                 cx + halfW, cy + halfH);
                     } else {
-                        des = new RectF(
+                        desS = new RectF(
                                 r.left + sAncL * k,
                                 r.top + sAncT * k,
                                 r.right + sAncR * k,
                                 r.bottom + sAncB * k);
                     }
-                    sLastDes.set(des);
+                    // visual twin: what the matrix surgery, the injected
+                    // from-rect (sLastDes) and the visual velocity see
+                    RectF desV = rot == 0 ? desS : toVisual(desS, rot, w, h);
+                    sLastDes.set(desV);
                     sLastDesValid = true;
                     sLastDesTime = now;
                     // Release velocity tracker (v7 #3): rolling VEL_WINDOW_MS
@@ -733,25 +791,27 @@ public final class WindowFollowScale {
                     if (now - sVelT0 >= VEL_WINDOW_MS) {
                         if (sVelT0 > 0L) {
                             float dt = (float) (now - sVelT0);
-                            sVelX = (des.centerX() - sVelX0) * 1000f / dt;
-                            sVelY = (des.centerY() - sVelY0) * 1000f / dt;
-                            sVelSig = (des.height() / (float) h - sVelSig0) * 1000f / dt;
+                            sVelX = (desV.centerX() - sVelX0) * 1000f / dt;
+                            sVelY = (desV.centerY() - sVelY0) * 1000f / dt;
+                            sVelSig = (desS.height() / (float) h - sVelSig0) * 1000f / dt;
                             sVelT = now;
                         }
                         sVelT0 = now;
-                        sVelX0 = des.centerX();
-                        sVelY0 = des.centerY();
-                        sVelSig0 = des.height() / (float) h;
+                        sVelX0 = desV.centerX();
+                        sVelY0 = desV.centerY();
+                        sVelSig0 = desS.height() / (float) h;
                     }
                 }
 
                 // Carousel follow target (v7 #1/#2): neighbours keep the
                 // final-layout gap beside our card; consumed by the
                 // dispatchDraw hook. Exactly (des.center - taskRect.center),
-                // viewScale-compensated at draw time.
-                carTarget(des.centerX() - taskRect.exactCenterX(),
-                        des.centerY() - taskRect.exactCenterY(), now);
+                // viewScale-compensated at draw time. Panel space (both
+                // desS and taskRect are panel; identical in portrait).
+                carTarget(desS.centerX() - taskRect.exactCenterX(),
+                        desS.centerY() - taskRect.exactCenterY(), now);
 
+                RectF des = rot == 0 ? desS : toVisual(desS, rot, w, h);
                 float a = des.width() / cur.width();
                 if (!(a > 0.05f) || !(a < 20f)) {
                     return; // degenerate / NaN guard
@@ -775,16 +835,17 @@ public final class WindowFollowScale {
                 rDy = dy;
                 if (!sLoggedOnce) {
                     sLoggedOnce = true;
-                    Port.log(TAG + " first v7 offset a=" + a + " dx=" + dx + " dy=" + dy);
+                    Port.log(TAG + " first v7.5 offset a=" + a + " dx=" + dx + " dy=" + dy);
                 }
-                dbgWfs("WFS sigH=" + (des.height() / h) + " dy=" + (sFingerY - sDownY)
+                dbgWfs("WFS rot=" + rot + " sigH=" + (desS.height() / h)
+                        + " dy=" + (sFingerY - sDownY)
                         + " udAge=" + udAge + " end=" + (sEndSet ? "Y" : "N")
                         + " t=" + t + " a=" + a
                         + " car=" + ((int) sCarTgtX) + "," + ((int) sCarTgtY));
             }
         });
 
-        Port.log(TAG + " v7.4.3 installed");
+        Port.log(TAG + " v7.8 installed");
     }
 
     /**
@@ -820,8 +881,10 @@ public final class WindowFollowScale {
                     }
                 });
 
-        // (B) X/Y velocity read by the spring interpolators (stock pipeline
-        // AND MotionReturnHome) - our card's visual velocity in px/s.
+        // (B) X/Y velocity read by the stock pipeline and MotionReturnHome
+        // - our card's visual velocity in px/s. Landscape (v7.5): the icon
+        // (z) consumers are the PANEL frame, the no-icon consumer is the
+        // visual frame - remap per consumer via the live trajectory rot.
         XposedHelpers.findAndHookMethod(hsv2, "getTransSpeed",
                 boolean.class, boolean.class, new XC_MethodHook() {
                     @Override
@@ -829,13 +892,16 @@ public final class WindowFollowScale {
                         if (!Port.on(Port.KEY_WIN_SCALE) || !velocityFresh()) {
                             return;
                         }
+                        boolean icon = (Boolean) param.args[0];
                         boolean isX = (Boolean) param.args[1];
-                        param.setResult(isX ? sVelX : sVelY);
+                        param.setResult(isX
+                                ? (icon ? trajPanelVelX() : sVelX)
+                                : (icon ? trajPanelVelY() : sVelY));
                     }
                 });
 
         // (C) keep the raw fields in sync (RoundImageView.setAnimationAttrs
-        // reads mTransSpeedX/Y directly).
+        // reads mTransSpeedX/Y directly - PANEL space, v7.5 landscape).
         XposedHelpers.findAndHookMethod(hsv2, "setTransSpeedX", float.class,
                 new XC_MethodHook() {
                     @Override
@@ -843,7 +909,7 @@ public final class WindowFollowScale {
                         if (!Port.on(Port.KEY_WIN_SCALE) || !velocityFresh()) {
                             return;
                         }
-                        XposedHelpers.setFloatField(param.thisObject, "mTransSpeedX", sVelX);
+                        XposedHelpers.setFloatField(param.thisObject, "mTransSpeedX", trajPanelVelX());
                     }
                 });
         XposedHelpers.findAndHookMethod(hsv2, "setTransSpeedY", float.class,
@@ -853,7 +919,7 @@ public final class WindowFollowScale {
                         if (!Port.on(Port.KEY_WIN_SCALE) || !velocityFresh()) {
                             return;
                         }
-                        XposedHelpers.setFloatField(param.thisObject, "mTransSpeedY", sVelY);
+                        XposedHelpers.setFloatField(param.thisObject, "mTransSpeedY", trajPanelVelY());
                     }
                 });
 
@@ -927,6 +993,7 @@ public final class WindowFollowScale {
         sVelSig0 = 0f;
         sLastDesValid = false;
         sLastDesTime = 0L;
+        sTrajRot = 0;
     }
 
     private static void resetAnchor() {
@@ -950,15 +1017,22 @@ public final class WindowFollowScale {
     }
 
     /**
-     * Display rotation == recents activity rotation means the TVS matrix has
-     * NO appended rotation (applyWindowToHomeRotation no-ops): plain screen
-     * space, our reference formula is valid (portrait AND landscape).
+     * TVS matrix rotation delta (v7.5): the matrix ends with
+     * applyWindowToHomeRotation which appends postDisplayRotation(delta,
+     * dp.w, dp.h) with delta = deltaRotation(recentsActivityRotation,
+     * displayRotation) - 0 means plain panel space (portrait), 1/3 the
+     * panel->visual rotation (landscape app over the portrait launcher),
+     * -1 means 180/bogus/reflection failure (keep stock geometry). The
+     * landscape mappings (postDisplayRotation, RecentsOrientedState:388,
+     * with dp 1080x2400):
+     *   delta=1: (x_v, y_v) = (y_p, w - x_p)
+     *   delta=3: (x_v, y_v) = (h - y_p, x_p)
      */
-    private static boolean rotationConsistent(Object tvs) {
+    private static int rotOf(Object tvs) {
         try {
             Object os = fOrientationState.get(tvs);
             if (os == null) {
-                return true; // cannot check: keep legacy portrait behavior
+                return 0; // cannot check: keep legacy portrait behavior
             }
             if (mDispRot == null) {
                 mDispRot = os.getClass().getMethod("getDisplayRotation");
@@ -966,20 +1040,92 @@ public final class WindowFollowScale {
             }
             int disp = (Integer) mDispRot.invoke(os);
             int rec = (Integer) mRecRot.invoke(os);
-            return disp == rec;
+            int delta = disp - rec;
+            if (delta < 0) {
+                delta += 4;
+            }
+            if (delta == 0 || delta == 1 || delta == 3) {
+                return delta;
+            }
+            return -1; // 180 or bogus: keep stock geometry
         } catch (Throwable t) {
-            return false; // reflection broken: keep stock geometry
+            return -1;
         }
     }
 
+    /** panel rect -> visual rect (v7.5 landscape). */
+    private static RectF toVisual(RectF p, int rot, int w, int h) {
+        if (rot == 1) {
+            return new RectF(p.top, w - p.right, p.bottom, w - p.left);
+        }
+        return new RectF(h - p.bottom, p.left, h - p.top, p.right); // rot == 3
+    }
+
+    /** visual rect -> panel rect (inverse of {@link #toVisual}). */
+    private static RectF toPanel(RectF v, int rot, int w, int h) {
+        if (rot == 1) {
+            return new RectF(w - v.bottom, v.left, w - v.top, v.right);
+        }
+        return new RectF(v.top, h - v.right, v.bottom, h - v.left); // rot == 3
+    }
+
+    /**
+     * Trajectory velocity in the PANEL (portrait pipeline) space (v7.5):
+     * visual->panel remap of sVelX/sVelY by the live trajectory rot -
+     * identity in portrait. rot=3: (vx_p, vy_p) = (vy_v, -vx_v);
+     * rot=1: (vx_p, vy_p) = (-vy_v, vx_v).
+     */
+    private static float trajPanelVelX() {
+        int rot = sTrajRot;
+        if (rot == 1) {
+            return -sVelY;
+        }
+        if (rot == 3) {
+            return sVelY;
+        }
+        return sVelX;
+    }
+
+    private static float trajPanelVelY() {
+        int rot = sTrajRot;
+        if (rot == 1) {
+            return sVelX;
+        }
+        if (rot == 3) {
+            return -sVelX;
+        }
+        return sVelY;
+    }
+
     /** Reference GstBut_ManipulationDelta mapping, raw-finger driven. */
-    private static RectF referenceRect(int w, int h) {
+    /**
+     * Reference trajectory rect.
+     *
+     * Portrait (rot == 0, unchanged): top = FAR*h*(1-sigma) - the card
+     * converges toward FAR*h = 0.2h (top-anchored, iOS-style).
+     *
+     * Landscape (rot != 0, v7.8 direct rot anchor): user spec in
+     * long/short edges - the SHORT edge is anchored at 0.3 against
+     * gravity (panel x: ax = 0.7w rot=1 / 0.3w rot=3; visual 0.3 of
+     * the short edge, same physical point both rots); the LONG edge
+     * is finger-following - the portrait-X analog: top = fy -
+     * sigma*downY, so the card tracks the swipe along the long edge
+     * and rests at the finger's position. The landscape swipe
+     * distance maps into mY x2 (user spec), so sigma reaches the
+     * floor at roughly half the portrait travel. At sigma=1:
+     * left=0, top=0 - identical to the portrait fullscreen start, so
+     * the anchor-capture blend has no snap.
+     */
+    private static RectF referenceRect(int w, int h, int rot) {
         float downX = sDownX;
         float downY = sDownY;
         float fx = sFingerX;
         float fy = sFingerY;
         // mY = H + dy; mH = (mY - F*H) * (H / (H - F*H))
-        float mY = h + (fy - downY);
+        // v7.8 landscape: the swipe runs along panel -y from the bar;
+        // its distance maps into mY x2 (user spec) so sigma reaches
+        // the floor at roughly half the portrait travel.
+        float mY = h + (fy - downY) * (rot == 0 ? 1f : 2f);
         float mH = (mY - FAR * h) * (h / (h - FAR * h));
         if (mH < KNEE * h) {
             float a = RESIST_A * h;
@@ -996,8 +1142,28 @@ public final class WindowFollowScale {
             mH = CAP * h;
         }
         float sigma = mH / h;
-        float left = fx - sigma * downX;
-        float top = FAR * h * (1f - sigma);
+        float left;
+        float top;
+        if (rot != 0) {
+            // v7.8: short edge (panel x) anchored - card center eases
+            // from fullscreen mid to ax (rot=1: 0.7w; rot=3: 0.3w; visual
+            // 0.3 of the short edge, against gravity). Long edge (panel y)
+            // is finger-following - the portrait-X analog: top = fy -
+            // sigma*downY, so the card tracks the swipe along the long
+            // edge and rests at the finger's position (sigma=1 start:
+            // top = 0, fullscreen seam is identical to portrait).
+            float ax = (rot == 1 ? 0.70f : 0.30f) * w;
+            float cxs = ax + (0.5f * w - ax) * sigma;
+            left = cxs - sigma * w / 2f;
+            top = (fx - sigma * downX); //(fx - (sigma) * (downX - 0.5 * h) - 0.5 * h) * sigma
+            if(rot == 3)
+            {
+                top = h - ((fx - sigma * downX) + sigma * h); 
+            }
+        } else {
+            left = fx - sigma * downX;
+            top = FAR * h * (1f - sigma);
+        }
         return new RectF(left, top, left + sigma * w, top + sigma * h);
     }
 
@@ -1020,11 +1186,13 @@ public final class WindowFollowScale {
                     sEndSet = false; // fresh GestureState -> new gesture
                     sEndTime = 0L;
                     sRelDesValid = false;
+                    sEndRecents = false;
                     resetAnchor();
                 }
             } else if (!sEndSet) {
                 sEndSet = true;
                 sEndTime = now;
+                sEndRecents = "RECENTS".equals(endTarget.toString());
                 sRelDes.set(sLastDes);
                 sRelDesValid = sLastDesValid && !sLastDes.isEmpty();
             }

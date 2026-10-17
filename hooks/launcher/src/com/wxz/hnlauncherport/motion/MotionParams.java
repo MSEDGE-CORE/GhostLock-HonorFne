@@ -26,6 +26,9 @@ public final class MotionParams {
     //   k = (2*PI*1.4)^2 = 77.37, sqrt(k) = 8.796
     //   zeta = 14 / (2*8.796) = 0.796 (underdamped, moderate overshoot)
     public static final float SCALE_DAMPING = 15f;
+    // wfsSyn scale spring (跟手 on, curve never rendered - synthesized v0):
+    // per tuning.
+    public static final float SCALE_DAMPING_SYN = 16f;
     public static final float ASPECT_HERTZ = 2.45f;
     public static final float ASPECT_DAMPING = 39.2f;
     public static final float REVERSE_THROW = 27.68f;

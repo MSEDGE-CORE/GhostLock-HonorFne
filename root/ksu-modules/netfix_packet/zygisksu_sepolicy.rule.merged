@@ -1,0 +1,34 @@
+type magisk_file file_type
+typeattribute magisk_file mlstrustedobject
+allow * magisk_file file *
+allow * magisk_file dir *
+allow * magisk_file fifo_file *
+allow * magisk_file chr_file *
+allow * magisk_file lnk_file *
+allow * magisk_file sock_file *
+allow system_server system_server process execmem
+allow zygote zygote process execmem
+allow zygote adb_data_file dir search
+allow zygote fs_type filesystem unmount
+allow zygote unlabeled file { open read getattr }
+allow zygote zygote capability sys_chroot
+allow zygote nsfs file { open read }
+type unshare_lock_file file_type
+allow zygote unshare_lock_file file { read write lock }
+# --- network fix (2026-10-16): KSU mid-boot policy reload leaves netdev/secmark SIDs unlabeled ---
+# CIL classes: packet(send recv relabelto forward_in forward_out) netif(ingress egress) peer(recv)
+allow domain unlabeled packet send
+allow domain unlabeled packet recv
+allow domain unlabeled packet forward_in
+allow domain unlabeled packet forward_out
+allow domain netif packet send
+allow domain netif packet recv
+allow domain netif packet forward_in
+allow domain netif packet forward_out
+allow domain unlabeled netif ingress
+allow domain unlabeled netif egress
+allow domain netif netif ingress
+allow domain netif netif egress
+allow domain unlabeled peer recv
+allow domain netif peer recv
+allow * default_android_service service_manager find

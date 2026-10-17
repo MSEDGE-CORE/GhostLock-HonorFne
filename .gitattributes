@@ -1,6 +1,8 @@
 # Windows checkout safety: shell scripts MUST stay LF (CRLF -> "bad interpreter").
 * text=auto
 *.sh text eol=lf
+*.command text eol=lf
+*.bat text eol=crlf
 
 # Binaries: never touch
 *.ko binary

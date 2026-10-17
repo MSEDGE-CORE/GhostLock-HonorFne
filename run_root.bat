@@ -51,6 +51,7 @@ echo [3/5] 检查 KernelSU 状态...
 adb shell "grep -q kernelsu /proc/modules" >nul 2>nul
 if not errorlevel 1 (
     echo       KernelSU 已在运行，无需再次提权。
+    call :ensure_module
     echo.
     pause
     exit /b 0
@@ -63,6 +64,7 @@ echo [4/5] 检查设备端部署...
 set NEED_DEPLOY=0
 adb shell "[ -x /data/local/tmp/e ]" >nul 2>nul || set NEED_DEPLOY=1
 adb shell "[ -f /data/local/tmp/ksu_fne/chain_hook.sh ]" >nul 2>nul || set NEED_DEPLOY=1
+adb shell "[ -f /data/local/tmp/netfix_packet/sepolicy.rule ]" >nul 2>nul || set NEED_DEPLOY=1
 if "%NEED_DEPLOY%"=="1" goto :deploy
 echo       已部署，跳过。
 goto :grind
@@ -77,6 +79,8 @@ for %%F in (chain_hook.sh kernelsu.ko ksud magiskpolicy ksu_rules load_ko kmsg_d
     adb push "root/ksu-late-load/%%F" /data/local/tmp/ksu_fne/ || goto :push_fail
 )
 adb shell "chmod 755 /data/local/tmp/ksu_fne/chain_hook.sh /data/local/tmp/ksu_fne/load_ko /data/local/tmp/ksu_fne/kmsg_dumper"
+adb push "root/ksu-modules/netfix_packet" /data/local/tmp/
+if errorlevel 1 goto :push_fail
 echo       部署完成。
 echo.
 
@@ -89,16 +93,33 @@ echo       * 成功后脚本自动停止
 echo.
 "%BASH%" "root/host-scripts/run_forever.sh"
 echo.
+
+rem root 落地后 detached chain_hook 还需数十秒完成 KSU 晚加载，
+rem 立即检查 /proc/modules 会误报失败——轮询等待（最长 180 秒）。
+echo       等待 KSU 晚加载链完成（最长 180 秒）...
+set /a KSU_WAIT=0
+:wait_ksu
 adb shell "grep -q kernelsu /proc/modules" >nul 2>nul
-if not errorlevel 1 (
-    echo ==================================================
-    echo    [成功] KernelSU 已加载，临时 root 就绪！
-    echo ==================================================
-) else (
-    echo ==================================================
-    echo    [未成功] 本次 grind 未落地，可重新运行再试。
-    echo ==================================================
-)
+if not errorlevel 1 goto :ksu_ok
+set /a KSU_WAIT=KSU_WAIT+1
+if %KSU_WAIT% GEQ 36 goto :ksu_fail
+ping -n 6 127.0.0.1 >nul
+goto :wait_ksu
+
+:ksu_fail
+call :ensure_module
+echo ==================================================
+echo    [未成功] 本次 grind 未落地，可重新运行再试。
+echo ==================================================
+goto :done_root
+
+:ksu_ok
+call :ensure_module
+echo ==================================================
+echo    [成功] KernelSU 已加载，临时 root 就绪！
+echo ==================================================
+
+:done_root
 echo.
 pause
 exit /b 0
@@ -124,3 +145,13 @@ exit /b 1
 echo [错误] 文件推送失败。请检查连接与 USB 调试授权后重试。
 pause
 exit /b 1
+
+rem ---------- netfix_packet 模块安装（KSU 就绪后调用） ----------
+rem /data/adb 为 root 目录，adb 直推不行：先经 /data/local/tmp 中转，su 0 cp 装入。
+rem 规则在 ksud late-load 时读取注入，故新装模块自下一次提权/重启起自动激活。
+:ensure_module
+adb shell "su 0 sh -c '[ -d /data/adb/modules/netfix_packet ] || cp -r /data/local/tmp/netfix_packet /data/adb/modules/netfix_packet'" >nul 2>nul
+adb shell "su 0 sh -c '[ -f /data/adb/modules/netfix_packet/sepolicy.rule ]'" >nul 2>nul && (
+    echo       netfix_packet 模块已就位（网络/状态栏/AOD 修复）
+)
+goto :eof

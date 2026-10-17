@@ -1,0 +1,6 @@
+id=netfix_packet
+name=NetFix Packet SELinux
+version=1.0
+versionCode=1
+author=wxz
+description=Allow packet send/recv on unlabeled netdevs (fixes WiFi/data/IMS after KSU sepolicy reload lost netif SIDs)

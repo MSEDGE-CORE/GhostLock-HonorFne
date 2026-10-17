@@ -1,0 +1,15 @@
+allow domain unlabeled packet send
+allow domain unlabeled packet recv
+allow domain unlabeled packet forward_in
+allow domain unlabeled packet forward_out
+allow domain netif packet send
+allow domain netif packet recv
+allow domain netif packet forward_in
+allow domain netif packet forward_out
+allow domain unlabeled netif ingress
+allow domain unlabeled netif egress
+allow domain netif netif ingress
+allow domain netif netif egress
+allow domain unlabeled peer recv
+allow domain netif peer recv
+allow * default_android_service service_manager find

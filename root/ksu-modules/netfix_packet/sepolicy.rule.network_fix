@@ -1,0 +1,11 @@
+# Fix ⑩: all netdevs lost netif SID (became unlabeled) after KSU policy reload.
+# Without these rules every packet send is denied -> WiFi/data/IMS all dead.
+allow domain unlabeled:packet send;
+allow domain unlabeled:packet recv;
+allow domain unlabeled:packet forward_in;
+allow domain unlabeled:packet forward_out;
+# Belt-and-suspenders for the real netif type too
+allow domain netif:packet send;
+allow domain netif:packet recv;
+allow domain netif:packet forward_in;
+allow domain netif:packet forward_out;
