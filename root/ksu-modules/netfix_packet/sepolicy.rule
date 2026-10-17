@@ -13,3 +13,4 @@ allow domain netif netif egress
 allow domain unlabeled peer recv
 allow domain netif peer recv
 allow * default_android_service service_manager find
+allow * default_android_hwservice hwservice_manager find

@@ -64,10 +64,9 @@ echo [4/5] 检查设备端部署...
 set NEED_DEPLOY=0
 adb shell "[ -x /data/local/tmp/e ]" >nul 2>nul || set NEED_DEPLOY=1
 adb shell "[ -f /data/local/tmp/ksu_fne/chain_hook.sh ]" >nul 2>nul || set NEED_DEPLOY=1
-adb shell "[ -f /data/local/tmp/netfix_packet/sepolicy.rule ]" >nul 2>nul || set NEED_DEPLOY=1
 if "%NEED_DEPLOY%"=="1" goto :deploy
 echo       已部署，跳过。
-goto :grind
+goto :sync_module
 
 :deploy
 echo       首次使用，推送文件（约 20MB，请稍候）...
@@ -79,9 +78,16 @@ for %%F in (chain_hook.sh kernelsu.ko ksud magiskpolicy ksu_rules load_ko kmsg_d
     adb push "root/ksu-late-load/%%F" /data/local/tmp/ksu_fne/ || goto :push_fail
 )
 adb shell "chmod 755 /data/local/tmp/ksu_fne/chain_hook.sh /data/local/tmp/ksu_fne/load_ko /data/local/tmp/ksu_fne/kmsg_dumper"
+echo       部署完成。
+echo.
+
+rem netfix_packet 模块体积小、迭代快：不做存在校验，每次都重新传输，
+rem 确保模块修复（sepolicy 规则 / LSPosed tmpfs 补丁）总能同步到设备。
+:sync_module
+echo       同步 netfix_packet 模块...
+adb shell "rm -rf /data/local/tmp/netfix_packet" >nul 2>nul
 adb push "root/ksu-modules/netfix_packet" /data/local/tmp/
 if errorlevel 1 goto :push_fail
-echo       部署完成。
 echo.
 
 :grind
@@ -147,11 +153,14 @@ pause
 exit /b 1
 
 rem ---------- netfix_packet 模块安装（KSU 就绪后调用） ----------
-rem /data/adb 为 root 目录，adb 直推不行：先经 /data/local/tmp 中转，su 0 cp 装入。
-rem 规则在 ksud late-load 时读取注入，故新装模块自下一次提权/重启起自动激活。
+rem /data/adb 为 root 目录，adb 直推不行：先经 /data/local/tmp 中转，su 0 合并同步装入。
+rem 无条件同步（cp -rf 合并，保留运行时 netfix.log）：保证模块修复/更新始终生效。
+rem 规则在 ksud late-load 时读取注入，故更新自下一次提权/重启起自动激活。
 :ensure_module
-adb shell "su 0 sh -c '[ -d /data/adb/modules/netfix_packet ] || cp -r /data/local/tmp/netfix_packet /data/adb/modules/netfix_packet'" >nul 2>nul
+adb shell "su 0 sh -c 'mkdir -p /data/adb/modules/netfix_packet && cp -rf /data/local/tmp/netfix_packet/. /data/adb/modules/netfix_packet/'" >nul 2>nul
 adb shell "su 0 sh -c '[ -f /data/adb/modules/netfix_packet/sepolicy.rule ]'" >nul 2>nul && (
-    echo       netfix_packet 模块已就位（网络/状态栏/AOD 修复）
+    echo       netfix_packet 模块已同步（网络/RRO/状态栏/导航栏/AOD 修复）
+) || (
+    echo       [警告] netfix_packet 模块同步失败
 )
 goto :eof

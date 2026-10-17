@@ -21,7 +21,8 @@ GhostLock-HonorFne/
 │       ├── load_ko / kmsg_dumper                       # insmod loader 与 kmsg 捕获工具
 │       └── *.patch / build_inner.sh / ksu_ko_build.sh  # .ko 构建与 patch
 │   └── ksu-modules/            #   KSU 模块（/data/adb/modules，重启保留）
-│       └── netfix_packet/      #     网络/状态栏/AOD SELinux 修复（15 行 sepolicy.rule）
+│       └── netfix_packet/      #     网络/状态栏/导航栏/AOD 修复（16 行 sepolicy.rule
+│                               #     + LSPosed daemon tmpfs 补丁，详见 §3）
 ├── hooks/
 │   ├── launcher/               # 桌面 hook：HnLauncherPort LSPosed 模块
 │   │                           #   （V17 特性移植：跟手缩放/物理落桌/连续切换/负一屏保持等）
@@ -66,11 +67,12 @@ adb push $GL/root/ksu-late-load/chain_hook.sh \
 adb shell "chmod 755 $D/chain_hook.sh $D/load_ko $D/kmsg_dumper"
 ```
 
-KSU 模块 `netfix_packet`（网络/状态栏/AOD 修复，详见 §3）也须在此 root 会话内部署一次：
+KSU 模块 `netfix_packet`（网络/状态栏/导航栏/AOD 修复，详见 §3）也须在此 root 会话内部署一次；**模块有更新时同样用合并同步**（保留运行时 netfix.log）：
 
 ```sh
-adb push $GL/root/ksu-modules/netfix_packet /data/local/tmp/netfix_packet
-adb shell "su 0 cp -r /data/local/tmp/netfix_packet /data/adb/modules/netfix_packet"
+adb shell "rm -rf /data/local/tmp/netfix_packet"
+adb push $GL/root/ksu-modules/netfix_packet /data/local/tmp/
+adb shell "su 0 sh -c 'mkdir -p /data/adb/modules/netfix_packet && cp -rf /data/local/tmp/netfix_packet/. /data/adb/modules/netfix_packet/'"
 ```
 
 ### 2. 每次开机恢复 root（per-boot）
@@ -87,10 +89,11 @@ root 不会持久化——每次重启后重新 grind。
 ```
 [1/5] 检查依赖        adb（Windows 另需 Git Bash）是否就绪
 [2/5] 连接设备        选择 USB 或 WiFi（输入手机 IP，端口 5555）
-[3/5] root 状态检查   KernelSU 已加载则直接退出，不重复提权
-[4/5] 部署检查        首次使用自动推送 e、ksu_fne 全套物料与 netfix_packet 模块
+[3/5] root 状态检查   KernelSU 已加载则同步 netfix_packet 后直接退出，不重复提权
+[4/5] 部署检查        首次使用自动推送 e、ksu_fne 全套物料；netfix_packet 模块
+                      不做存在校验，每次运行都重新传输（体积小，保证修复同步）
 [5/5] 运行提权        bash run_forever.sh（W1 → W2 → KSU 晚加载），结束报告结果
-                      成功后自动把 netfix_packet 装入 /data/adb/modules（su 0 cp）
+                      成功后自动把 netfix_packet 合并同步进 /data/adb/modules
 ```
 
 手动方式（等效）：在 `root\host-scripts` 目录右键 **"Git Bash Here"**：
@@ -125,16 +128,30 @@ adb shell "su 0 grep kernelsu /proc/modules"    # 有输出即 KSU 已加载
 - 可单独跑一轮：`./run_w2.sh`（不走外循环）；`gl_*.sh`、`shift*.sh` 为早期 shift 扫描实验脚本，正常流程用不到。
 - **不要并发跑两个 grind**。
 
-### 3. netfix_packet 模块（网络/状态栏/AOD 修复，root/ksu-modules）
+### 3. netfix_packet 模块（网络/状态栏/导航栏/AOD 修复，root/ksu-modules）
 
-根因：KSU 晚加载链中 `magiskpolicy` 重载策略后 netdev SID 变 unlabeled、vendor 服务查询被拒——
-网络断流（unlabeled packet send/recv denied，14 行规则）与状态栏/AOD 异常
-（system_server `denied find` vendor AIDL，`allow * default_android_service service_manager find`，1 行规则）同源，全在 `netfix_packet/sepolicy.rule` 15 行内。
+修复两个独立根因：
 
-- 部署：一次性（§1 末尾命令，root 会话内 `su 0 cp` 进 `/data/adb/modules/`）。
-- 激活：**全自动**——每次 per-boot root 成功时 ksud late-load 读取模块 `sepolicy.rule` 注入，无需手动操作。
-- 验证：`adb shell ping -c 1 192.168.1.1` 通；`su 0 dmesg | grep avc | grep -E 'packet|service_manager'` 无新增 denied。
-- 注意：`ksud sepolicy patch` 在本机是 no-op，勿走该路径（详见 `root/ksu-modules/netfix_packet/README.md` 与 `apply_netfix_now.sh` 记录）。
+1. **SELinux 丢 SID / 拒查询**（16 行 `sepolicy.rule`，随 ksud late-load 自动注入）：
+   `magiskpolicy` 重载策略后 netdev SID 变 unlabeled → 网络断流（14 行 packet 规则）；
+   vendor service/hwservice `find` 被拒 → 持续 hwcinterface denial
+   （`allow * default_android_service service_manager find` +
+   `allow * default_android_hwservice hwservice_manager find`）。
+2. **LSPosed daemon 叠 tmpfs 遮蔽 RRO idmap**（`post-fs-data.sh` + `service.sh` 兜底）：
+   LSPosed daemon 每次启动都 `mount tmpfs /data/resource-cache`（单 boot 实测叠 67+ 层），
+   遮蔽全部 Runtime Resource Overlay → 状态栏偏小/导航栏三键几何错误/AOD 死亡、
+   idmap2d crash loop。脚本在 LSPosed 之前 sed 原地补丁 daemon 的 mount 行并
+   umount 清理已叠层，再兜底保活 idmap2d；日志写 `$MODDIR/netfix.log`。
+
+- 部署：run_root 一键脚本**每次运行都重新传输并合并同步**该模块（不做存在校验），
+  手动部署/更新见 §1 末尾命令。
+- 激活：规则在下一次提权/重启时注入；脚本在 ksud 脚本阶段自动运行，已 root 会话内可
+  `su 0 sh /data/adb/modules/netfix_packet/post-fs-data.sh` 立即执行。
+- 验证：`ping` 通；`grep -c ' /data/resource-cache ' /proc/1/mountinfo` 为 0；
+  `cmd overlay list | grep -c '\[x\]'` RRO 已激活；`getprop init.svc.idmap2d` 为 running。
+- **AOD**：idmap2d crash loop 可能导致 AOD 失效，需手动重新启用。
+- 注意：`ksud sepolicy patch` 在本机是 no-op，勿走该路径（详见
+  `root/ksu-modules/netfix_packet/README.md` 与 `apply_netfix_now.sh` 记录）。
 
 ### 4. 桌面 hook（hooks/launcher）
 
