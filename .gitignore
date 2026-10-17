@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# hooks/launcher (gradle) 编译临时文件
+hooks/launcher/.gradle/
+hooks/launcher/.idea/
+hooks/launcher/*.iml
+hooks/launcher/local.properties
+hooks/launcher/build/
+hooks/launcher/app/build/
+hooks/launcher/xposed-api/build/
+hooks/launcher/out/

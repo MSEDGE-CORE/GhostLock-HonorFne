@@ -37,8 +37,9 @@ import de.robv.android.xposed.XposedHelpers;
  *    (fast flick). Three-key recents runs foreground + resumed in NormalState
  *    and keeps the stock close.
  *  - OtherActivityInputConsumerEx.onGestureEnded(GestureEndTarget):
- *      HOME -> keep the overlay (nothing to do, it was never closed);
- *      RECENTS / NEW_TASK / LAST_TASK -> close it (进后台/切任务退出) + drop flag;
+ *      HOME / LAST_TASK -> keep the overlay (返回桌面/返回当前应用不退出,
+ *          LAST_TASK 含上滑回落进当前应用与反向快切);
+ *      RECENTS / NEW_TASK -> close it (进后台/横向切换应用退出) + drop flag;
  *  - HOME-key / freeform returns still restore through the onResume and
  *    onWindowFocusChanged(true) triggers.
  *  - 返回资源库 (HiLibrary) 的返家动画目标刷新: findExitAppAnimation 查到的
@@ -176,17 +177,21 @@ public final class KeepHiboardReturn {
                             return;
                         }
                         String end = ((Enum<?>) target).name();
-                        if ("HOME".equals(end)) {
-                            // Swipe-up returned home: the blocked closes left the
-                            // overlay open (re-shown by resume/-111) -> keep it.
-                            Port.log("KeepHiboardReturn: gestureEnd HOME keep=" + sFromHiboard);
+                        if ("HOME".equals(end) || "LAST_TASK".equals(end)) {
+                            // Swipe-up returned home (HOME) or the gesture fell
+                            // back into the current app (LAST_TASK, 含上滑回落
+                            // 与反向快切): the blocked closes left the overlay
+                            // open (re-shown by resume/-111) -> keep it.
+                            Port.log("KeepHiboardReturn: gestureEnd " + end
+                                    + " keep=" + sFromHiboard);
                             return;
                         }
                         if (!sFromHiboard) {
                             return;
                         }
-                        // RECENTS / NEW_TASK / LAST_TASK: 进后台或切换任务 ->
+                        // RECENTS / NEW_TASK: 进后台或横向切换任务 ->
                         // 退出负一屏 (V17 CLOSE_HIBOARD_FOR_RECENT parity).
+                        // LAST_TASK (返回当前应用) 与 HOME 同走保持分支.
                         sFromHiboard = false;
                         if (keepEnabled()) {
                             try {

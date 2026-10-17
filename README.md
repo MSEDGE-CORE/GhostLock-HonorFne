@@ -36,7 +36,7 @@ GhostLock-HonorFne/
 
 ### 0. 前置条件
 
-- 荣耀 70（FNE-AN00），Bootloader 锁定（全程不解锁、不刷分区），内核 `5.4.289-qgki-gf6cb1b712a6e`（MagicOS 8.0）。
+- 荣耀 70（FNE-AN00），内核 `5.4.289-qgki-gf6cb1b712a6e`（MagicOS 8.0）。
 - Host：macOS 或 Windows + adb；重建 exploit 另需 Android NDK r27c（自备）。
   - **Windows**：安装 [Git for Windows](https://git-scm.com/download/win)（提供 Git Bash）+ [platform-tools](https://developer.android.com/tools/releases/platform-tools)（adb 加入 PATH）。
 - 一次性安装（保留在设备上，重启不丢，物料在本仓库 `deploy/`）：
@@ -209,4 +209,12 @@ KERNEL_SRC=<Code_Opensource/kernel 路径> ./ksu_ko_build.sh
 # 克隆 KernelSU v3.3.0 + 打 patch + 容器内构建 → .build/kernelsu.ko
 ```
 
-详细分析见 `docs/README_分析说明.md` 与 `root/exploit/README.md`。
+## 7. 致谢
+
+- [GhostLock-H80GT](https://github.com/yakidango-official/GhostLock-H80GT)
+- [KernelSU](https://github.com/tiann/KernelSU) 
+
+## 8. 许可证
+
+- `exploit/`与文档：**Apache License 2.0**（见[LICENSE](LICENSE)），与上游PoC一致。
+- `ksu/`：**GPL-2.0**（见[ksu/LICENSE](ksu/LICENSE)），`init-bootid.patch`与`ksu_rules.annotated`衍生自KernelSU的`kernel/`目录。
