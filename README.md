@@ -43,7 +43,7 @@ GhostLock-HonorFne/
   - `deploy/KernelSU-manager.apk`——root 链用它定位 `libksud.so` 并设置 `persist.adb.tcp.port`；
   - `deploy/LSPosed-zygisk.zip` + `deploy/ZygiskNext.zip`（经 KSU 模块方式安装）——hooks 的载体。
 
-### 1. 一次性部署（刷机/重置后）
+### 1. 一次性部署
 
 ```sh
 GL=~/Documents/GhostLockHonorFne/GhostLock-HonorFne
@@ -209,12 +209,12 @@ KERNEL_SRC=<Code_Opensource/kernel 路径> ./ksu_ko_build.sh
 # 克隆 KernelSU v3.3.0 + 打 patch + 容器内构建 → .build/kernelsu.ko
 ```
 
-## 7. 致谢
+## 致谢
 
 - [GhostLock-H80GT](https://github.com/yakidango-official/GhostLock-H80GT)
 - [KernelSU](https://github.com/tiann/KernelSU) 
 
-## 8. 许可证
+## 许可证
 
 - `exploit/`与文档：**Apache License 2.0**（见[LICENSE](LICENSE)），与上游PoC一致。
 - `ksu/`：**GPL-2.0**（见[ksu/LICENSE](ksu/LICENSE)），`init-bootid.patch`与`ksu_rules.annotated`衍生自KernelSU的`kernel/`目录。
