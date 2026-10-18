@@ -72,5 +72,35 @@ public class HookEntry implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             Port.log("FolderOpenSpeed install failed", t);
         }
+        try {
+            com.wxz.hnlauncherport.look.IconNoLabel.install(lpparam.classLoader);
+        } catch (Throwable t) {
+            Port.log("IconNoLabel install failed", t);
+        }
+        try {
+            com.wxz.hnlauncherport.warm.StartupWarmup.install(lpparam.classLoader);
+        } catch (Throwable t) {
+            Port.log("StartupWarmup install failed", t);
+        }
+        try {
+            com.wxz.hnlauncherport.press.ForceIconPressScale.install(lpparam.classLoader);
+        } catch (Throwable t) {
+            Port.log("ForceIconPressScale install failed", t);
+        }
+        try {
+            com.wxz.hnlauncherport.press.ForceRecentsPressScale.install(lpparam.classLoader);
+        } catch (Throwable t) {
+            Port.log("ForceRecentsPressScale install failed", t);
+        }
+        try {
+            com.wxz.hnlauncherport.back.IconBackSpringTune.install(lpparam.classLoader);
+        } catch (Throwable t) {
+            Port.log("IconBackSpringTune install failed", t);
+        }
+        try {
+            com.wxz.hnlauncherport.back.IconBackAdaptiveIcon.install(lpparam.classLoader);
+        } catch (Throwable t) {
+            Port.log("IconBackAdaptiveIcon install failed", t);
+        }
     }
 }

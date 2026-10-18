@@ -24,9 +24,9 @@ GhostLock-HonorFne/
 │       └── netfix_packet/      #     网络/状态栏/导航栏/AOD 修复（16 行 sepolicy.rule
 │                               #     + LSPosed daemon tmpfs 补丁，详见 §3）
 ├── hooks/
-│   ├── launcher/               # 桌面 hook：HnLauncherPort LSPosed 模块
-│   │                           #   （V17 特性移植：跟手缩放/物理落桌/连续切换/负一屏保持等）
-│   └── systemui/               # SystemUI hook（占位，待开发）
+│   └── launcher/               # 桌面 hook：HnLauncherPort LSPosed 模块
+│                               #   （V17 特性移植：跟手缩放/物理落桌/连续切换/负一屏保持等）
+│                               # SystemUI hook（占位，待开发）
 ├── deploy/                     # 一次性安装物料（KSU Manager / LSPosed / ZygiskNext）
 └── docs/
     └── README_分析说明.md      # 详细分析（提权原理、W1/W2、KSU 晚加载）

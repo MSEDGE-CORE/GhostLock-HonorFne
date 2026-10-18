@@ -555,7 +555,11 @@ public final class MotionReturnHome {
                 // (B) v7.5). The spring v0 IS that velocity directly - no
                 // finger->visual conversion, no endPos-based math; the icon
                 // consumer takes the visual->panel remap below (v0.9).
-                boolean curveLive = !capsule && WindowFollowScale.curveVelFresh();
+                // Capsule follows the SAME normal-icon velocity route
+                // (curve live -> synthesized -> v0.4 classic); capsule flows
+                // never render the curve, so curveVelFresh stays false
+                // there and the chain falls through to the classic clamp.
+                boolean curveLive = WindowFollowScale.curveVelFresh();
                 boolean wfsSyn = false;
                 float v0;
                 int rot;
@@ -593,7 +597,18 @@ public final class MotionReturnHome {
                 } else {
                     rot = liveRot(h);
                     float speed = screenSpeed(h, isReturnHome, isX, rot);
-                    if (!capsule && Port.on(Port.KEY_WIN_SCALE)) {
+                    // NOTE: V17 dynamicAdjustSpeedAndParam feeds RAW px/s
+                    // (gain 1.0, clamp +-10419) into the ENGINE
+                    // SpringConstraint/MotionObject - that transfer is NOT
+                    // portable to the classic SpringInterpolator path: the
+                    // interpolator consumer expects 0.25-attenuated,
+                    // endPos-scaled velocities (field test v0.9.1: raw
+                    // injection = huge misplacement). Capsule follows the
+                    // SAME velocity route as the normal icon return
+                    // (curve-synthesized when 跟手 is on, v0.4 classic
+                    // clamp otherwise); spring params (hertz/damping) stay
+                    // the V17 capsule values via MotionParams.
+                    if (Port.on(Port.KEY_WIN_SCALE)) {
                         // v0.8: 跟手 ON but the curve never rendered
                         // (released before the live takeover had samples).
                         // Synthesize the card velocity with the NEW curve's
@@ -684,6 +699,10 @@ public final class MotionReturnHome {
                 } else {
                     rot = liveRot(h);
                     float speed = screenSpeed(h, isIcon, isX, rot);
+                    // NOTE: as transHook - V17's raw px/s scale transfer
+                    // (setLinearVelocity(-clamp(vY, +-scaleMax))) is engine
+                    // -only; the classic interpolator needs the
+                    // span-normalized V14-coupled formula below.
                     if (!capsule && Port.on(Port.KEY_WIN_SCALE)) {
                         // v0.8: 跟手 ON but the curve never rendered
                         // (released before the live takeover had samples).
@@ -707,6 +726,10 @@ public final class MotionReturnHome {
                         // in the non-curveLive fallback - wrong when 跟手 is off
                         // (same freeze class as the trans 0.375*att bug).
                         v0 = Math.min(Math.abs(v) * 1.28f, endPos * 37f) * 0.5f;
+                        if (capsule) {
+                            // per tuning: capsule scale start velocity x10
+                            v0 *= 1f;
+                        }
                     }
                 }
 
@@ -715,6 +738,7 @@ public final class MotionReturnHome {
                 float threshold;
                 if (capsule) {
                     stiffness = MotionParams.CAPSULE_SCALE_STIFFNESS;
+                    // per tuning: capsule scale damping x0.1
                     damping = MotionParams.CAPSULE_SCALE_DAMPING;
                     threshold = MotionParams.CAPSULE_VALUE_THRESHOLD;
                 } else {

@@ -42,12 +42,21 @@ public final class MotionParams {
     // capsule branch :4716-4721 - hardcoded, bypasses CloseAnimSceneManager):
     //   movementDamping 23.86 / movementHertz 2.0
     //   scaleDamping    26.26 / scaleHertz    2.2
-    public static final float CAPSULE_MOVEMENT_HERTZ = 2.0f;
-    public static final float CAPSULE_MOVEMENT_DAMPING = 23.86f;
-    public static final float CAPSULE_SCALE_HERTZ = 2.2f;
-    public static final float CAPSULE_SCALE_DAMPING = 26.26f;
+    public static final float CAPSULE_MOVEMENT_HERTZ = 0.5f;
+    public static final float CAPSULE_MOVEMENT_DAMPING = 5.6f;
+    public static final float CAPSULE_SCALE_HERTZ = 0.5f;
+    public static final float CAPSULE_SCALE_DAMPING = 4f;
     // Classic capsule value threshold (AnimConstants.sCapsuleValueThresholdReturnHome)
     public static final float CAPSULE_VALUE_THRESHOLD = 0.003f;
+
+    // Swipe-up release into RECENTS (V17 HomeToOverviewModelCreator
+    // sSpringBackHertz[1]/sSpringBackDamping[1] - the scene's phase-4
+    // model is registered with param 1, i.e. the springback set):
+    //   hertz 1.8191284 / linearDamping 15.814455
+    //   k = (2*PI*1.8191)^2 = 130.7, zeta = 15.81/(2*sqrt(130.7)) = 0.69
+    //   -> underdamped, mild overshoot into the capsule settle.
+    public static final float SWIPE_TO_RECENTS_HERTZ = 1.8191284f;
+    public static final float SWIPE_TO_RECENTS_DAMPING = 15.814455f;
 
     public static float stiffness(float hertz) {
         double w = 2.0 * Math.PI * hertz;

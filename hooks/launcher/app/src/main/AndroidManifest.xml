@@ -4,7 +4,7 @@
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"/>
 
     <application
-        android:label="HnLauncher Motion Port"
+        android:label="HN系统提升"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false">
@@ -16,7 +16,7 @@
         <activity
             android:name="com.wxz.hnlauncherport.SettingsActivity"
             android:exported="true"
-            android:label="HnLauncherPort"
+            android:label="HN系统提升"
             android:theme="@style/Theme.HnPort.Splash">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>

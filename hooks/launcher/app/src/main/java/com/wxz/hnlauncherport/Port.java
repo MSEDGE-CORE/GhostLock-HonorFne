@@ -27,6 +27,7 @@ public final class Port {
     public static final String KEY_ONESTEP_THRESHOLD = "hn_port_onestep_threshold"; // 1 = swipe小窗/分屏阈值 0.8/0.75 横0.3H竖0.5H, 松手需停顿
     public static final String KEY_DISABLE_ICON_CARD = "hn_port_disable_icon_card"; // 1 = 禁用桌面上滑图标弹卡片 (资源库不受影响)
     public static final String KEY_ADV_UNLOCK_ANIM = "hn_port_adv_unlock_anim"; // 1 = 解锁图标圆形扩散动画 (高级解锁动画)
+    public static final String KEY_ICON_NO_LABEL = "hn_port_icon_no_label"; // 1 = 图标无字: 隐藏桌面图标文本
     public static final String KEY_WIN_DEBUG = "hn_port_win_debug"; // 1 = per-frame debug lines (logcat tag HnWFS, throttled)
 
     private static volatile Context sAppCtx;
