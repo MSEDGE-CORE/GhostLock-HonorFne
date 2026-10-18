@@ -32,16 +32,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.Apps
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -55,6 +55,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -131,21 +132,22 @@ private fun SettingsScreen() {
                 PackageManager.PERMISSION_GRANTED
     }
     var tab by remember { mutableIntStateOf(0) }
-    var showRestartDialog by remember { mutableStateOf(false) }
+    var pendingRestart by remember { mutableStateOf<String?>(null) }
 
-    if (showRestartDialog) {
+    val restartTarget = pendingRestart
+    if (restartTarget != null) {
         AlertDialog(
-            onDismissRequest = { showRestartDialog = false },
-            title = { Text("重启桌面") },
-            text = { Text("确定要重启桌面吗？重启后设置立即生效。") },
+            onDismissRequest = { pendingRestart = null },
+            title = { Text("重启" + restartLabel(restartTarget)) },
+            text = { Text("确定要重启" + restartLabel(restartTarget) + "吗？") },
             confirmButton = {
                 TextButton(onClick = {
-                    showRestartDialog = false
-                    restartLauncher(context)
+                    restartProc(context, restartTarget)
+                    pendingRestart = null
                 }) { Text("重启") }
             },
             dismissButton = {
-                TextButton(onClick = { showRestartDialog = false }) { Text("取消") }
+                TextButton(onClick = { pendingRestart = null }) { Text("取消") }
             }
         )
     }
@@ -187,11 +189,6 @@ private fun SettingsScreen() {
                         else -> "SystemUI"
                     })
                 },
-                actions = {
-                    IconButton(onClick = { showRestartDialog = true }) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "重启桌面")
-                    }
-                }
             )
         },
         bottomBar = {
@@ -266,6 +263,13 @@ private fun SettingsScreen() {
                             style = MaterialTheme.typography.bodyLarge
                         )
                     }
+                    SettingsSection("操作") {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ActionButton("重启 SystemUI") { pendingRestart = "systemui" }
+                            ActionButton("重启桌面") { pendingRestart = "launcher" }
+                            ActionButton("重启 AOD") { pendingRestart = "aod" }
+                        }
+                    }
                 }
                 1 -> {
                     if (!secure) {
@@ -287,11 +291,25 @@ private fun SettingsScreen() {
                     }
                 }
                 else -> {
-                    SettingsSection("SystemUI") {
-                        Text(
-                            "暂无可配置项",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    SettingsSection("状态栏") {
+                        SettingsSwitchItem(ToggleRow(
+                            "禁用状态栏自动缩小", "灵动胶囊启用时，状态栏保持大尺寸",
+                            Port.KEY_SB_NO_SHRINK
+                        ), true)
+                        SettingsSwitchItem(ToggleRow(
+                            "禁用状态栏元素自动隐藏", "灵动胶囊启用时，状态栏杂项图标不隐藏",
+                            Port.KEY_SB_NO_HIDE
+                        ), true)
+                    }
+                    SettingsSection("杂项") {
+                        SettingsSwitchItem(ToggleRow(
+                            "固定AOD位置", "禁用AOD自动下移，可能导致烧屏",
+                            Port.KEY_AOD_FIX_POS
+                        ), true)
+                        RootDisableItem(
+                            title = "禁用自动更新",
+                            subtitle = "禁用系统自动更新服务（需要ROOT权限）",
+                            pkg = "com.hihonor.ouc"
                         )
                     }
                 }
@@ -378,6 +396,81 @@ private fun SettingsSwitchItem(row: ToggleRow, secure: Boolean) {
     }
 }
 
+/** 通过 root 整包禁用/恢复系统应用，开关状态实时查询 pm disabled 列表. */
+@Composable
+private fun RootDisableItem(title: String, subtitle: String, pkg: String) {
+    val context = LocalContext.current
+    var checked by remember { mutableStateOf(false) }
+    var loaded by remember { mutableStateOf(false) }
+    LaunchedEffect(pkg) {
+        checked = isPkgDisabled(pkg)
+        loaded = true
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp)
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                subtitle,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.width(16.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = { on ->
+                checked = on
+                Toast.makeText(context, if (on) "正在禁用…" else "正在恢复…", Toast.LENGTH_SHORT).show()
+                Thread {
+                    val ok = runRootCmd(
+                        if (on) "pm disable-user --user 0 $pkg" else "pm enable $pkg"
+                    )
+                    val disabled = isPkgDisabled(pkg)
+                    android.os.Handler(context.mainLooper).post {
+                        checked = disabled
+                        Toast.makeText(
+                            context,
+                            when {
+                                ok && disabled && on -> "已禁用 $pkg"
+                                ok && !disabled && !on -> "已恢复 $pkg"
+                                else -> "操作失败（无 root 授权）"
+                            },
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }.start()
+            },
+            enabled = loaded
+        )
+    }
+}
+
+private fun runRootCmd(cmd: String): Boolean = try {
+    val p = Runtime.getRuntime().exec(arrayOf("su", "0", "sh", "-c", cmd))
+    p.waitFor() == 0
+} catch (e: Exception) {
+    false
+}
+
+private fun isPkgDisabled(pkg: String): Boolean = try {
+    val p = Runtime.getRuntime().exec(arrayOf("su", "0", "sh", "-c", "pm list packages -d"))
+    val out = p.inputStream.bufferedReader().readText()
+    p.waitFor()
+    out.contains("package:$pkg")
+} catch (e: Exception) {
+    false
+}
+
 private fun readKey(context: android.content.Context, key: String): Boolean =
     try {
         Settings.Global.getInt(context.contentResolver, key, 0) == 1
@@ -392,14 +485,37 @@ private fun writeKey(context: android.content.Context, key: String, on: Boolean)
         false
     }
 
-/** 通过 root 重启桌面 (KernelSU 首次会弹授权). */
-private fun restartLauncher(context: android.content.Context) {
-    Toast.makeText(context, "正在重启桌面…", Toast.LENGTH_SHORT).show()
+/** 一行一个按钮 (参照 LatitudeLongitudeCamera 按钮样式: 圆角 24dp 全宽). */
+@Composable
+private fun ActionButton(text: String, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        shape = RoundedCornerShape(24.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(text)
+    }
+}
+
+private fun restartLabel(target: String): String = when (target) {
+    "systemui" -> " SystemUI"
+    "aod" -> " AOD"
+    else -> "桌面"
+}
+
+/** 通过 root 重启目标进程 (KernelSU 首次会弹授权). */
+private fun restartProc(context: android.content.Context, target: String) {
+    val label = restartLabel(target)
+    val cmd = when (target) {
+        "systemui" -> "killall com.android.systemui"
+        "aod" -> "killall com.hihonor.aod"
+        else -> "killall com.hihonor.android.launcher"
+    }
+    Toast.makeText(context, "正在重启" + label + "…", Toast.LENGTH_SHORT).show()
     Thread {
         var ok = false
         try {
-            val p = Runtime.getRuntime().exec(
-                arrayOf("su", "0", "sh", "-c", "killall com.hihonor.android.launcher"))
+            val p = Runtime.getRuntime().exec(arrayOf("su", "0", "sh", "-c", cmd))
             ok = p.waitFor() == 0
         } catch (e: Exception) {
             ok = false
@@ -407,7 +523,7 @@ private fun restartLauncher(context: android.content.Context) {
         android.os.Handler(context.mainLooper).post {
             Toast.makeText(
                 context,
-                if (ok) "桌面已重启" else "重启失败（无 root 授权）",
+                if (ok) label + "已重启" else "重启失败（无 root 授权）",
                 Toast.LENGTH_SHORT
             ).show()
         }

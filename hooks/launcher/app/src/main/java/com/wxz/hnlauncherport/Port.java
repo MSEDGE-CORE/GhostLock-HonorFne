@@ -29,6 +29,9 @@ public final class Port {
     public static final String KEY_ADV_UNLOCK_ANIM = "hn_port_adv_unlock_anim"; // 1 = 解锁图标圆形扩散动画 (高级解锁动画)
     public static final String KEY_ICON_NO_LABEL = "hn_port_icon_no_label"; // 1 = 图标无字: 隐藏桌面图标文本
     public static final String KEY_WIN_DEBUG = "hn_port_win_debug"; // 1 = per-frame debug lines (logcat tag HnWFS, throttled)
+    public static final String KEY_AOD_FIX_POS = "hn_port_aod_fix_pos"; // 1 = AOD 固定位置: 首移+80 后不再自动移动
+    public static final String KEY_SB_NO_SHRINK = "hn_port_sb_no_shrink"; // 1 = 灵动胶囊启用时状态栏不缩到 0.88
+    public static final String KEY_SB_NO_HIDE = "hn_port_sb_no_hide"; // 1 = 灵动胶囊启用时状态栏杂项图标不隐藏
 
     private static volatile Context sAppCtx;
 

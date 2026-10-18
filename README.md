@@ -37,7 +37,8 @@ GhostLock-HonorFne/
 
 ### 前置条件
 
-- 荣耀 70（FNE-AN00），内核 `5.4.289-qgki-gf6cb1b712a6e`（MagicOS 8.0）。
+- 荣耀 70（FNE-AN00），内核 `5.4.289-qgki-gf6cb1f712a6e`（MagicOS 8.0.214）或
+  `5.4.295-qgki-*`（MagicOS 8.0.2xx，含 `g0fb2656b2b50`/8.0.224 实机内核，共 10 个已知构建）。
 - Host：macOS 或 Windows + adb；重建 exploit 另需 Android NDK r27c（自备）。
   - **Windows**：安装 [Git for Windows](https://git-scm.com/download/win)（提供 Git Bash）+ [platform-tools](https://developer.android.com/tools/releases/platform-tools)（adb 加入 PATH）。
 - 一次性安装（保留在设备上，重启不丢，物料在本仓库 `deploy/`）：

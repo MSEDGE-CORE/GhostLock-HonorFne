@@ -2,5 +2,7 @@
 <resources>
     <string-array name="xposed_scope">
         <item>com.hihonor.android.launcher</item>
+        <item>com.hihonor.aod</item>
+        <item>com.android.systemui</item>
     </string-array>
 </resources>

@@ -5,9 +5,29 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class HookEntry implements IXposedHookLoadPackage {
     private static final String LAUNCHER_PKG = "com.hihonor.android.launcher";
+    private static final String AOD_PKG = "com.hihonor.aod";
+    private static final String SYSTEMUI_PKG = "com.android.systemui";
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
+        if (AOD_PKG.equals(lpparam.packageName)) {
+            Port.log("loaded in aod process=" + lpparam.processName);
+            try {
+                com.wxz.hnlauncherport.aod.AodHooks.install(lpparam.classLoader);
+            } catch (Throwable t) {
+                Port.log("AodHooks install failed", t);
+            }
+            return;
+        }
+        if (SYSTEMUI_PKG.equals(lpparam.packageName)) {
+            Port.log("loaded in systemui process=" + lpparam.processName);
+            try {
+                com.wxz.hnlauncherport.systemui.SystemUIHooks.install(lpparam.classLoader);
+            } catch (Throwable t) {
+                Port.log("SystemUIHooks install failed", t);
+            }
+            return;
+        }
         if (!LAUNCHER_PKG.equals(lpparam.packageName)) {
             return;
         }
