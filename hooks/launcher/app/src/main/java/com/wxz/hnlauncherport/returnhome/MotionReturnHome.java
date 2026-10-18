@@ -229,14 +229,18 @@ public final class MotionReturnHome {
                                             + str(from) + " -> " + str(mirrored));
                                 }
                                 } else {
+                                    // z=false landscape FROM pre-transpose:
+                                    // abandoned (v0.9.2) - the empty-rect
+                                    // placeholder degenerated the window
+                                    // start (0-size snapshot -> stuck/black
+                                    // window). Keep the stock FROM rect.
                                     RectF pre = new RectF(
                                             from.top, from.left,
                                             from.bottom, from.right);
                                     pre = new RectF(
-                                            0, 0, 0, 0);  //MSEDGE: difficult, complex, abandon.........
+                                            0, 0, 0, 0); // MSEDGE: difficult, complex, abandon.........
                                     param.args[1] = pre;
-                                    Port.log("MotionCalcFromFix noicon pre "
-                                            + str(from) + " -> " + str(pre));
+                                    Port.log("MotionCalcFromFix noicon skip");
                                 }
                             }
                             if (to == null) {
@@ -510,15 +514,18 @@ public final class MotionReturnHome {
         return new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                if (!motionEnabled()) {
-                    return;
-                }
-                boolean capsule = isCapsule();
-                RectF from = (RectF) param.args[0];
-                RectF to = (RectF) param.args[1];
-                Object h = param.thisObject;
-                Point screen = (Point) XposedHelpers.getObjectField(h, "mScreenSize");
-                float span = isX ? screen.x : screen.y;
+                // 整体兜底: 反射异常不可抛回桌面原调用点
+                // (会变成 FATAL EXCEPTION -> 桌面崩溃), 保留原结果.
+                try {
+                    if (!motionEnabled()) {
+                        return;
+                    }
+                    boolean capsule = isCapsule();
+                    RectF from = (RectF) param.args[0];
+                    RectF to = (RectF) param.args[1];
+                    Object h = param.thisObject;
+                    Point screen = (Point) XposedHelpers.getObjectField(h, "mScreenSize");
+                    float span = isX ? screen.x : screen.y;
 
                 RectF target = capsule ? widenForCapsule(to, screen) : to;
 
@@ -660,6 +667,9 @@ public final class MotionReturnHome {
                 if (spring != null) {
                     param.setResult(spring);
                 }
+                } catch (Throwable t) {
+                    Port.log("MotionTrans hook failed", t);
+                }
             }
         };
     }
@@ -668,6 +678,7 @@ public final class MotionReturnHome {
         return new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                try {
                 if (!motionEnabled()) {
                     return;
                 }
@@ -726,10 +737,6 @@ public final class MotionReturnHome {
                         // in the non-curveLive fallback - wrong when 跟手 is off
                         // (same freeze class as the trans 0.375*att bug).
                         v0 = Math.min(Math.abs(v) * 1.28f, endPos * 37f) * 0.5f;
-                        if (capsule) {
-                            // per tuning: capsule scale start velocity x10
-                            v0 *= 1f;
-                        }
                     }
                 }
 
@@ -738,7 +745,6 @@ public final class MotionReturnHome {
                 float threshold;
                 if (capsule) {
                     stiffness = MotionParams.CAPSULE_SCALE_STIFFNESS;
-                    // per tuning: capsule scale damping x0.1
                     damping = MotionParams.CAPSULE_SCALE_DAMPING;
                     threshold = MotionParams.CAPSULE_VALUE_THRESHOLD;
                 } else {
@@ -759,6 +765,9 @@ public final class MotionReturnHome {
                         endPos, v0, threshold);
                 if (spring != null) {
                     param.setResult(spring);
+                }
+                } catch (Throwable t) {
+                    Port.log("MotionScale hook failed", t);
                 }
             }
         };

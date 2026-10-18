@@ -59,16 +59,28 @@ public final class OneStepThresholds {
                         try {
                             int h = XposedHelpers.getIntField(param.thisObject, "mScreenHeight");
                             int w = XposedHelpers.getIntField(param.thisObject, "mScreenWidth");
-                            boolean landscape = w > h;
-                            float shapeYRatio = landscape ? 0.4f : 0.5f;
+                            boolean landscape = w > h; // rot != 0
+                            // Y 椭圆纵半轴按跟手曲线 (curveLive) 是否启用取档:
+                            // 启用   -> 横 0.5H : 竖 0.55H (保持原值);
+                            // 未启用 -> 横 0.4H : 竖 0.5H.
+                            boolean curveLive = Port.on(Port.KEY_WIN_SCALE);
+                            float shapeYRatio = curveLive
+                                    ? (landscape ? 0.5f : 0.55f)
+                                    : (landscape ? 0.4f : 0.5f);
+                            // X 椭圆横半轴: 横屏 (rot!=0) 从 stock 0.5W 收窄到
+                            // 0.2W, 竖屏保持 stock 0.5W.
+                            float shapeXRatio = landscape ? 0.4f : 0.4f;
                             XposedHelpers.setFloatField(param.thisObject, "mShowBgHotY", h * 0.8f);
                             XposedHelpers.setFloatField(param.thisObject, "mShowIconHotY", h * 0.75f);
                             XposedHelpers.setFloatField(param.thisObject, "mScaleHotY", h * 0.75f);
                             XposedHelpers.setFloatField(param.thisObject, "mShapeHotY", h * shapeYRatio);
+                            XposedHelpers.setFloatField(param.thisObject, "mShapeHotX", w * shapeXRatio);
                             Port.log("OneStepThresholds: thresholds updated h=" + h
                                     + " bg=" + (h * 0.8f) + " icon=" + (h * 0.75f)
                                     + " shapeY=" + (h * shapeYRatio)
-                                    + (landscape ? " (landscape)" : " (portrait)"));
+                                    + " shapeX=" + (w * shapeXRatio)
+                                    + (landscape ? " (landscape" : " (portrait")
+                                    + (curveLive ? " curveLive)" : ")"));
                         } catch (Throwable t) {
                             Port.log("OneStepThresholds updateLayoutParams failed", t);
                         }

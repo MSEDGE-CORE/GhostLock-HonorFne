@@ -337,6 +337,32 @@ public final class ForceBlur {
                 Port.log("ForceBlur icon-settle hook failed", t);
             }
 
+            // 搜索页(全局搜索)高级模糊强制启用. V14 进入搜索页的窗口模糊
+            // 机型区分链 (见分析):
+            //   GlobalSearchUtils.isEnableWindowBlur()
+            //     = Utilities.isEnableWindowBlur()         <- 已由上方 hook 强制
+            //       && isEnableSearchBlur                  <- com.hihonor.search
+            //       (app meta-data "window.blur.supported", 机型/搜索App版本区分)
+            //       && (!isSearchSupportXmlScene || UseSpaceHierarchyAnim)
+            // Utilities 之外的搜索 App meta-data 门槛在此汇总方法上一并强制,
+            // 使所有机型进入搜索页都走真窗口模糊 (mBlurView 壁纸位图降级/
+            // Lite 无模糊路径不再触发).
+            try {
+                Class<?> gsu = XposedHelpers.findClass(
+                        "com.hihonor.android.launcher.globalsearch.GlobalSearchUtils", cl);
+                XposedHelpers.findAndHookMethod(gsu, "isEnableWindowBlur", new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        if (Port.on(Port.KEY_BLUR)) {
+                            param.setResult(Boolean.TRUE);
+                        }
+                    }
+                });
+                Port.log("ForceBlur search-blur hooked");
+            } catch (Throwable t) {
+                Port.log("ForceBlur search-blur hook failed", t);
+            }
+
             Port.log("ForceBlur installed");
         } catch (Throwable t) {
             Port.log("ForceBlur install failed");
