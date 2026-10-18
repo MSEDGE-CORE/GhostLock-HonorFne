@@ -1,5 +1,6 @@
 # GhostLock-HonorFne
 Honor 70 (FNE-AN00) privilege escalation PoC: GhostLock (CVE-2026-43499) + custom KernelSU module loading
+Honor MagicOS 8.0 Launcher hook port: Advanced Transition Animations + Gesture Experience optimization
 
 ## 目录结构
 
@@ -22,7 +23,7 @@ GhostLock-HonorFne/
 │       └── *.patch / build_inner.sh / ksu_ko_build.sh  # .ko 构建与 patch
 │   └── ksu-modules/            #   KSU 模块（/data/adb/modules，重启保留）
 │       └── netfix_packet/      #     网络/状态栏/导航栏/AOD 修复（16 行 sepolicy.rule
-│                               #     + LSPosed daemon tmpfs 补丁，详见 §3）
+│                               #     + LSPosed daemon tmpfs 补丁，详见 §netfix_packet 模块）
 ├── hooks/
 │   └── launcher/               # 桌面 hook：HnLauncherPort LSPosed 模块
 │                               #   （V17 特性移植：跟手缩放/物理落桌/连续切换/负一屏保持等）
@@ -34,7 +35,7 @@ GhostLock-HonorFne/
 
 ## 使用方法
 
-### 0. 前置条件
+### 前置条件
 
 - 荣耀 70（FNE-AN00），内核 `5.4.289-qgki-gf6cb1b712a6e`（MagicOS 8.0）。
 - Host：macOS 或 Windows + adb；重建 exploit 另需 Android NDK r27c（自备）。
@@ -43,10 +44,58 @@ GhostLock-HonorFne/
   - `deploy/KernelSU-manager.apk`——root 链用它定位 `libksud.so` 并设置 `persist.adb.tcp.port`；
   - `deploy/LSPosed-zygisk.zip` + `deploy/ZygiskNext.zip`（经 KSU 模块方式安装）——hooks 的载体。
 
-### 1. 一次性部署
+### per-boot root
+
+root 不会持久化——每次重启后重新 grind。
+
+流程（全自动，含失败重启/参数爬坡）：
+
+1. `settle`：杀后台应用，等 CPU 空闲 ≥85%（W1 对时序极敏感）。
+2. **W1**：`env $SYNC e --write1` → 内核写 1 → SELinux Permissive（失败自动重启设备重来，`GL_W2_CRED_ADJ` 按 erase/uid 阶梯自动 +8）。
+3. **W2**：cred 写 → root 子进程 → 执行 `e` 内嵌的 `.ghostlock_root.sh` → detached 拉起 `$D/chain_hook.sh`：
+   fake kallsyms（按本次开机 slide 重定基，自校验）→ `magiskpolicy` 注入 ksu 规则 → `load_ko` insmod `kernelsu.ko` → `ksud` 分阶段启动（post-fs-data / services / boot-completed / install）→ 最后一步恢复 SELinux enforcing。
+4. 成功标志（run_forever.sh 自动检测 `KSU READY`，手动验证）：
 
 ```sh
-GL=~/Documents/GhostLockHonorFne/GhostLock-HonorFne
+adb shell "su 0 grep kernelsu /proc/modules"    # 有输出即 KSU 已加载
+```
+
+- 常用诊断：`/data/local/tmp/.ghostlock_root.log`、`$D/chain.log`、`$D/chain_status`（`ok` = 链完成）。
+- 可单独跑一轮：`./run_w2.sh`（不走外循环）；`gl_*.sh`、`shift*.sh` 为早期 shift 扫描实验脚本，正常流程用不到。
+- **不要并发跑两个 grind**。
+
+### 一键脚本（Windows / macOS）和资源手动部署
+
+#### 一键脚本（推荐）
+
+- **Windows**：仓库根目录**双击 `run_root.bat`**（或 cmd 中运行）。
+- **macOS**：仓库根目录**双击 `run_root.command`**；被 Gatekeeper 拦截时右键 → 打开，或终端 `bash run_root.command`。
+
+脚本按提示走完全程：
+
+```
+[1/5] 检查依赖        adb（Windows 另需 Git Bash）是否就绪
+[2/5] 连接设备        选择 USB 或 WiFi（输入手机 IP，端口 5555）
+[3/5] root 状态检查   KernelSU 已加载则同步 netfix_packet 后直接退出，不重复提权
+[4/5] 部署检查        首次使用自动推送 e、ksu_fne 全套物料；netfix_packet 模块
+                      不做存在校验，每次运行都重新传输（体积小，保证修复同步）
+[5/5] 运行提权        bash run_forever.sh（W1 → W2 → KSU 晚加载），结束报告结果
+                      成功后自动把 netfix_packet 合并同步进 /data/adb/modules
+```
+
+#### 资源手动部署
+
+手动方式（等效）：在 `root\host-scripts` 目录右键 **"Git Bash Here"**：
+
+```sh
+adb connect <手机IP>:5555    # WiFi 方式；USB 免此步
+bash run_forever.sh
+```
+
+首次使用须先推送全套物料：
+
+```sh
+GL=GhostLock-HonorFne
 D=/data/local/tmp/ksu_fne
 
 # exploit 二进制（改名 e，run_w2.sh 固定找 /data/local/tmp/e）
@@ -67,7 +116,7 @@ adb push $GL/root/ksu-late-load/chain_hook.sh \
 adb shell "chmod 755 $D/chain_hook.sh $D/load_ko $D/kmsg_dumper"
 ```
 
-KSU 模块 `netfix_packet`（网络/状态栏/导航栏/AOD 修复，详见 §3）也须在此 root 会话内部署一次；**模块有更新时同样用合并同步**（保留运行时 netfix.log）：
+KSU 模块 `netfix_packet`（网络/状态栏/导航栏/AOD 修复，见下文）也须在此 root 会话内部署一次；**模块有更新时同样用合并同步**（保留运行时 netfix.log）：
 
 ```sh
 adb shell "rm -rf /data/local/tmp/netfix_packet"
@@ -75,60 +124,7 @@ adb push $GL/root/ksu-modules/netfix_packet /data/local/tmp/
 adb shell "su 0 sh -c 'mkdir -p /data/adb/modules/netfix_packet && cp -rf /data/local/tmp/netfix_packet/. /data/adb/modules/netfix_packet/'"
 ```
 
-### 2. 每次开机恢复 root（per-boot）
-
-root 不会持久化——每次重启后重新 grind。
-
-#### 一键脚本（推荐）
-
-- **Windows**：仓库根目录**双击 `run_root.bat`**（或 cmd 中运行）。
-- **macOS**：仓库根目录**双击 `run_root.command`**；被 Gatekeeper 拦截时右键 → 打开，或终端 `bash run_root.command`。
-
-脚本按提示走完全程：
-
-```
-[1/5] 检查依赖        adb（Windows 另需 Git Bash）是否就绪
-[2/5] 连接设备        选择 USB 或 WiFi（输入手机 IP，端口 5555）
-[3/5] root 状态检查   KernelSU 已加载则同步 netfix_packet 后直接退出，不重复提权
-[4/5] 部署检查        首次使用自动推送 e、ksu_fne 全套物料；netfix_packet 模块
-                      不做存在校验，每次运行都重新传输（体积小，保证修复同步）
-[5/5] 运行提权        bash run_forever.sh（W1 → W2 → KSU 晚加载），结束报告结果
-                      成功后自动把 netfix_packet 合并同步进 /data/adb/modules
-```
-
-手动方式（等效）：在 `root\host-scripts` 目录右键 **"Git Bash Here"**：
-
-```sh
-adb connect <手机IP>:5555    # WiFi 方式；USB 免此步
-bash run_forever.sh
-```
-
-#### macOS
-
-一键：仓库根目录双击 `run_root.command`（见上）。手动等效：
-
-```sh
-cd ~/Documents/GhostLockHonorFne/GhostLock-HonorFne/root/host-scripts
-./run_forever.sh          # 无人值守：外循环拉起 run_w2.sh，成功自动停止
-```
-
-流程（全自动，含失败重启/参数爬坡）：
-
-1. `settle`：杀后台应用，等 CPU 空闲 ≥85%（W1 对时序极敏感）。
-2. **W1**：`env $SYNC e --write1` → 内核写 1 → SELinux Permissive（失败自动重启设备重来，`GL_W2_CRED_ADJ` 按 erase/uid 阶梯自动 +8）。
-3. **W2**：cred 写 → root 子进程 → 执行 `e` 内嵌的 `.ghostlock_root.sh` → detached 拉起 `$D/chain_hook.sh`：
-   fake kallsyms（按本次开机 slide 重定基，自校验）→ `magiskpolicy` 注入 ksu 规则 → `load_ko` insmod `kernelsu.ko` → `ksud` 分阶段启动（post-fs-data / services / boot-completed / install）→ 最后一步恢复 SELinux enforcing。
-4. 成功标志（run_forever.sh 自动检测 `KSU READY`，手动验证）：
-
-```sh
-adb shell "su 0 grep kernelsu /proc/modules"    # 有输出即 KSU 已加载
-```
-
-- 常用诊断：`/data/local/tmp/.ghostlock_root.log`、`$D/chain.log`、`$D/chain_status`（`ok` = 链完成）。
-- 可单独跑一轮：`./run_w2.sh`（不走外循环）；`gl_*.sh`、`shift*.sh` 为早期 shift 扫描实验脚本，正常流程用不到。
-- **不要并发跑两个 grind**。
-
-### 3. netfix_packet 模块（网络/状态栏/导航栏/AOD 修复，root/ksu-modules）
+### netfix_packet 模块（网络/状态栏/导航栏/AOD 修复，root/ksu-modules）
 
 修复两个独立根因：
 
@@ -144,7 +140,7 @@ adb shell "su 0 grep kernelsu /proc/modules"    # 有输出即 KSU 已加载
    umount 清理已叠层，再兜底保活 idmap2d；日志写 `$MODDIR/netfix.log`。
 
 - 部署：run_root 一键脚本**每次运行都重新传输并合并同步**该模块（不做存在校验），
-  手动部署/更新见 §1 末尾命令。
+  手动部署/更新见上文「资源手动部署」末尾命令。
 - 激活：规则在下一次提权/重启时注入；脚本在 ksud 脚本阶段自动运行，已 root 会话内可
   `su 0 sh /data/adb/modules/netfix_packet/post-fs-data.sh` 立即执行。
 - 验证：`ping` 通；`grep -c ' /data/resource-cache ' /proc/1/mountinfo` 为 0；
@@ -153,7 +149,7 @@ adb shell "su 0 grep kernelsu /proc/modules"    # 有输出即 KSU 已加载
 - 注意：`ksud sepolicy patch` 在本机是 no-op，勿走该路径（详见
   `root/ksu-modules/netfix_packet/README.md` 与 `apply_netfix_now.sh` 记录）。
 
-### 4. 桌面 hook（hooks/launcher）
+### 桌面 hook（hooks/launcher）
 
 前提：per-boot root 已就绪、LSPosed 已启用。
 
@@ -173,24 +169,20 @@ adb shell "su 0 sh -c 'settings put global hn_port_<key> 1'"
 
 | key | 功能 |
 |-----|------|
-| `motion` | V17 物理弹簧落桌动画 |
-| `parallel` | 连续切换应用（即时中断上一动画；canBreak 仅发射飞行中强制） |
-| `blur` | V17 高斯模糊策略（含文件夹背景缩小+模糊、图标入场提速） |
-| `icon_hide` | 拖拽时图标隐藏 |
-| `win_scale` | 上滑跟手窗口缩放 |
-| `keep_hiboard` | 返家保持负一屏/资源库 |
-| `onestep_threshold` | OneStep 手势阈值调整 |
-| `disable_icon_card` | 禁用图标卡片 |
-| `adv_unlock_anim` | 解锁图标圆形扩散入场动画 |
+| `motion` | 应用启动关闭动效优化 |
+| `icon_hide` | 大文件夹打开应用时隐藏对应图标 |
+| `win_scale` | 锚点优化 |
+| `parallel` | 连续切换应用 |
+| `blur` | 高级模糊 |
+| `adv_unlock_anim` | 高级解锁动画 |
+| `onestep_threshold` | 小窗/分屏阈值优化 |
+| `keep_hiboard` | 负一屏/资源库保持 |
+| `disable_icon_card` | 禁用图标上滑卡片 |
 | `win_debug` | 跟手诊断日志 |
 
 改完杀桌面进程即可生效：`am force-stop` 无效，须用上面的 `kill`。
 
-### 5. SystemUI hook（hooks/systemui）
-
-待开发。结构与 launcher 同构（独立 LSPosed 模块，模块代码禁用 lambda，javac -source 8）。
-
-### 6. 重新构建（可选，仓库已含全部预编译产物）
+### 重新构建（可选，仓库已含全部预编译产物）
 
 **exploit（e）**——NDK 自备：
 

@@ -154,9 +154,9 @@ private fun SettingsScreen() {
     val motionRows = remember { listOf(
         ToggleRow("应用启动关闭动效优化", "新版模型，连贯曲线，横屏修复",
             Port.KEY_MOTION, Port.KEY_ICON_HIDE),
+        ToggleRow("锚点优化", "窗口向0.2移动缩小", Port.KEY_WIN_SCALE),
         ToggleRow("连续切换应用", "立即停止上一个窗口", Port.KEY_PARALLEL),
         ToggleRow("高级模糊", "启用高端机型的模糊效果，优化部分速率曲线", Port.KEY_BLUR),
-        ToggleRow("锚点优化", "窗口向0.2移动缩小", Port.KEY_WIN_SCALE),
         ToggleRow("高级解锁动画", "分组扩散，渐进弹簧", Port.KEY_ADV_UNLOCK_ANIM)
     ) }
     // 手势与行为
