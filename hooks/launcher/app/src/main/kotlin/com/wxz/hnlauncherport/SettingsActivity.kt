@@ -300,6 +300,20 @@ private fun SettingsScreen() {
                             "禁用状态栏元素自动隐藏", "灵动胶囊启用时，状态栏杂项图标不隐藏",
                             Port.KEY_SB_NO_HIDE
                         ), true)
+                        SettingsSwitchItem(ToggleRow(
+                            "始终显示灵动胶囊", "胶囊不自动收缩成小图标，可能导致烧屏",
+                            Port.KEY_CAPSULE_ALWAYS
+                        ), true)
+                    }
+                    SettingsSection("控制中心") {
+                        SettingsSwitchItem(ToggleRow(
+                            "动效优化", "横滑切换松手时携带手指惯性",
+                            Port.KEY_CC_SPRING_VEL
+                        ), true)
+                        SettingsSwitchItem(ToggleRow(
+                            "高级模糊", "实时窗口模糊，模糊度跟手变化",
+                            Port.KEY_CC_REAL_BLUR
+                        ), true)
                     }
                     SettingsSection("杂项") {
                         SettingsSwitchItem(ToggleRow(

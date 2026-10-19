@@ -32,6 +32,9 @@ public final class Port {
     public static final String KEY_AOD_FIX_POS = "hn_port_aod_fix_pos"; // 1 = AOD 固定位置: 首移+80 后不再自动移动
     public static final String KEY_SB_NO_SHRINK = "hn_port_sb_no_shrink"; // 1 = 灵动胶囊启用时状态栏不缩到 0.88
     public static final String KEY_SB_NO_HIDE = "hn_port_sb_no_hide"; // 1 = 灵动胶囊启用时状态栏杂项图标不隐藏
+    public static final String KEY_CAPSULE_ALWAYS = "hn_port_capsule_always"; // 1 = 灵动胶囊不自动收缩 (保持带背景胶囊视图)
+    public static final String KEY_CC_SPRING_VEL = "hn_port_cc_spring_vel"; // 1 = 控制中心动效优化: 横滑松手 spring 初速度=手指速度 + 卡片放大锚点(上排4张角锚点, 下排3张顶边中点)
+    public static final String KEY_CC_REAL_BLUR = "hn_port_cc_real_blur"; // 1 = 控制中心实时窗口模糊 (alpha 跟手半径)
 
     private static volatile Context sAppCtx;
 
