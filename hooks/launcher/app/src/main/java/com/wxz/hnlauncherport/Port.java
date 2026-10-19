@@ -35,6 +35,8 @@ public final class Port {
     public static final String KEY_CAPSULE_ALWAYS = "hn_port_capsule_always"; // 1 = 灵动胶囊不自动收缩 (保持带背景胶囊视图)
     public static final String KEY_CC_SPRING_VEL = "hn_port_cc_spring_vel"; // 1 = 控制中心动效优化: 横滑松手 spring 初速度=手指速度 + 卡片放大锚点(上排4张角锚点, 下排3张顶边中点)
     public static final String KEY_CC_REAL_BLUR = "hn_port_cc_real_blur"; // 1 = 控制中心实时窗口模糊 (alpha 跟手半径)
+    public static final String KEY_KG_HIDE_STEPS = "hn_port_kg_hide_steps"; // 1 = 隐藏锁屏左下角步数
+    public static final String KEY_KG_NO_TOOLBOX = "hn_port_kg_no_toolbox"; // 1 = 禁用锁屏底部上滑工具菜单
 
     private static volatile Context sAppCtx;
 

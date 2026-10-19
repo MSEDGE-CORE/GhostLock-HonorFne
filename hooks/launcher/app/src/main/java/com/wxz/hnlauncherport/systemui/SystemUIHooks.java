@@ -238,6 +238,12 @@ public final class SystemUIHooks {
                         if (!(anim instanceof android.animation.Animator)) {
                             return;
                         }
+                        // 关闭 (z=false) 时末值 0.9 -> 1.0: 不再缩小消失
+                        if (!Boolean.TRUE.equals(param.args[1])
+                                && anim instanceof android.animation.ValueAnimator) {
+                            rewriteScaleEnd((android.animation.ValueAnimator) anim, v,
+                                    Boolean.TRUE.equals(param.args[2]));
+                        }
                         ((android.animation.Animator) anim).addListener(
                                 new android.animation.Animator.AnimatorListener() {
                             @Override
@@ -259,7 +265,173 @@ public final class SystemUIHooks {
                     }
                 });
 
+        // (6) 锁屏隐藏步数: 真正渲染步数的是 FooterView.setVisibilityOfStep
+        // (左下角步数文本/图标), 一律 GONE.
+        final Class<?> footerViewCls = XposedHelpers.findClass(
+                "com.hihonor.keyguard.view.FooterView", cl);
+        XposedHelpers.findAndHookMethod(footerViewCls, "setVisibilityOfStep", int.class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                if (Port.on(Port.KEY_KG_HIDE_STEPS)) {
+                    param.args[0] = 8; // GONE
+                }
+            }
+        });
+
+        // 杂志锁屏路径: MagazineDetailView.isInterestedEvent (mTouchMode=6 lift)
+        final Class<?> magazineDetailCls = XposedHelpers.findClass(
+                "com.android.keyguard.hwlockscreen.magazine.MagazineDetailView", cl);
+        XposedHelpers.findAndHookMethod(magazineDetailCls, "isInterestedEvent",
+                android.view.MotionEvent.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        if (!Port.on(Port.KEY_KG_NO_TOOLBOX)) {
+                            return;
+                        }
+                        int mode = XposedHelpers.getIntField(param.thisObject, "mTouchMode");
+                        if (mode == 6) {
+                            XposedHelpers.setIntField(param.thisObject, "mTouchMode", 0);
+                            param.setResult(false);
+                            Port.log("SystemUIHooks: toolbox lift blocked (MagazineDetail mode 6)");
+                        }
+                    }
+                });
+        // 非杂志锁屏路径: InfoCenterView.isInterestedEvent
+        // (mTouchMode=6 lift 路径), 底部上滑不再滑出工具菜单;
+        // 工具菜单行保持显示, 菜单内按钮点击 (mode 1) 不受影响.
+        final Class<?> infoCenterCls = XposedHelpers.findClass(
+                "com.hihonor.keyguard.view.widget.InfoCenterView", cl);
+        XposedHelpers.findAndHookMethod(infoCenterCls, "isInterestedEvent",
+                android.view.MotionEvent.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        if (!Port.on(Port.KEY_KG_NO_TOOLBOX)) {
+                            return;
+                        }
+                        int mode = XposedHelpers.getIntField(param.thisObject, "mTouchMode");
+                        if (mode == 6) {
+                            XposedHelpers.setIntField(param.thisObject, "mTouchMode", 0);
+                            param.setResult(false);
+                            Port.log("SystemUIHooks: toolbox lift blocked (InfoCenter mode 6)");
+                        }
+                    }
+                });
+
+        // (4c) 控制中心卡片缩放 0.9 -> 1.0: 打开初值 0.9 -> 1.0,
+        //      关闭末值 0.9 -> 1.0 (Notification 的 0.95 不动)
+        XposedHelpers.findAndHookMethod(panelImplCls, "getCardAnimatorStartScale",
+                View.class, boolean.class, boolean.class, String.class, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        if (!Port.on(Port.KEY_CC_SPRING_VEL)) {
+                            return;
+                        }
+                        if (!"ControlCenter".equals(param.args[3])) {
+                            return;
+                        }
+                        // z=true 打开 (含续接 z2, 续接时原取拖拽中已被缩小的
+                        // view.getScaleX(), 导致仍从小放大): 一律 1.0
+                        if (Boolean.TRUE.equals(param.args[1])) {
+                            param.setResult(1.0f);
+                        }
+                    }
+                });
+        // 打开路径走的是 createCardAnimation -> getAnimateStartScale (0.95),
+        // 也要归 1
+        XposedHelpers.findAndHookMethod(panelImplCls, "getAnimateStartScale",
+                View.class, boolean.class, boolean.class, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        if (Port.on(Port.KEY_CC_SPRING_VEL)
+                                && Boolean.TRUE.equals(param.args[1])) {
+                            param.setResult(1.0f);
+                        }
+                    }
+                });
+
+        // 关闭路径 createCardAnimation (header/scroller 走这条) 末值 0.95 -> 1.0,
+        // 否则停在 0.95 不复位, 下次显示起始也 <1
+        XposedHelpers.findAndHookMethod(panelImplCls, "createCardAnimation",
+                View.class, boolean.class, boolean.class, boolean.class, boolean.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        if (!Port.on(Port.KEY_CC_SPRING_VEL)) {
+                            return;
+                        }
+                        if (Boolean.TRUE.equals(param.args[1])) {
+                            return; // 打开路径: start 已由 getAnimateStartScale hook 归 1
+                        }
+                        Object anim = param.getResult();
+                        if (anim instanceof android.animation.ValueAnimator) {
+                            rewriteScaleEnd((android.animation.ValueAnimator) anim,
+                                    (View) param.args[0], Boolean.TRUE.equals(param.args[2]));
+                        }
+                    }
+                });
+
+        // [DEBUG] 临时: 记录 CC 视图被缩到 <1 的调用源, 定位显示动画初值来源
+        final Class<?> ccScrollCls = XposedHelpers.findClass(
+                "com.android.systemui.controllercenter.HnControlCenterScrollView", cl);
+        final Class<?> ccHeaderCls = XposedHelpers.findClass(
+                "com.android.systemui.controllercenter.HnControlCenterHeader", cl);
+        XC_MethodHook scaleProbe = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                float v = (Float) param.args[0];
+                Object thiz = param.thisObject;
+                if (v >= 0.995f && v <= 1.005f) {
+                    return;
+                }
+                if (!ccScrollCls.isInstance(thiz) && !ccHeaderCls.isInstance(thiz)) {
+                    return;
+                }
+                StackTraceElement[] st = new Throwable().getStackTrace();
+                StringBuilder sb = new StringBuilder("scaleProbe " + v + " on "
+                        + thiz.getClass().getSimpleName() + " <- ");
+                int n = 0;
+                for (StackTraceElement e : st) {
+                    String cn = e.getClassName();
+                    if (cn.startsWith("com.wxz.") || cn.startsWith("de.robv")
+                            || cn.startsWith("android.animation")
+                            || cn.equals("java.lang.Thread")) {
+                        continue;
+                    }
+                    sb.append(cn, cn.lastIndexOf('.') + 1, cn.length())
+                      .append('.').append(e.getMethodName()).append(':')
+                      .append(e.getLineNumber()).append(' ');
+                    if (++n >= 6) {
+                        break;
+                    }
+                }
+                Port.log(sb.toString());
+            }
+        };
+        XposedHelpers.findAndHookMethod(View.class, "setScaleX", float.class, scaleProbe);
+        XposedHelpers.findAndHookMethod(View.class, "setScaleY", float.class, scaleProbe);
+
         Port.log("SystemUIHooks installed");
+    }
+
+    /** 关闭动画 scaleX/scaleY 末值改 1.0 (续接时初值=当前 scale, 否则 1.0). */
+    private static void rewriteScaleEnd(android.animation.ValueAnimator va, View v, boolean resume) {
+        try {
+            android.animation.PropertyValuesHolder[] holders = va.getValues();
+            if (holders == null) {
+                return;
+            }
+            float start = resume ? v.getScaleX() : 1.0f;
+            java.lang.reflect.Method m = android.animation.PropertyValuesHolder.class
+                    .getMethod("setFloatValues", float[].class);
+            for (android.animation.PropertyValuesHolder h : holders) {
+                String n = h.getPropertyName();
+                if ("scaleX".equals(n) || "scaleY".equals(n)) {
+                    m.invoke(h, new Object[]{new float[]{start, 1.0f}});
+                }
+            }
+        } catch (Throwable t) {
+            Port.log("SystemUIHooks: rewriteScaleEnd failed", t);
+        }
     }
 
     private static void applyShadeBlur(Class<?> shadeCtrlCls, float alpha) {
@@ -338,10 +510,10 @@ public final class SystemUIHooks {
                     c.setPivotX(w / 2f);
                     c.setPivotY(0);
                 } else if (xs[i] + w / 2f <= midX) {
-                    c.setPivotX(w / 2f);
+                    c.setPivotX(w);
                     c.setPivotY(0f);
                 } else {
-                    c.setPivotX(w / 2f);
+                    c.setPivotX(0f);
                     c.setPivotY(0f);
                 }
             }

@@ -307,12 +307,22 @@ private fun SettingsScreen() {
                     }
                     SettingsSection("控制中心") {
                         SettingsSwitchItem(ToggleRow(
-                            "动效优化", "卡片锚点优化，横滑切换惯性",
+                            "动效优化", "卡片入场优化，横滑切换惯性",
                             Port.KEY_CC_SPRING_VEL
                         ), true)
                         SettingsSwitchItem(ToggleRow(
-                            "高级模糊", "实时窗口模糊，模糊度跟手变化",
+                            "高级模糊", "模糊半径跟手变化",
                             Port.KEY_CC_REAL_BLUR
+                        ), true)
+                    }
+                    SettingsSection("锁屏") {
+                        SettingsSwitchItem(ToggleRow(
+                            "隐藏步数", "隐藏锁屏左下角的步数显示",
+                            Port.KEY_KG_HIDE_STEPS
+                        ), true)
+                        SettingsSwitchItem(ToggleRow(
+                            "禁用锁屏工具", "禁用锁屏底部上滑的工具菜单",
+                            Port.KEY_KG_NO_TOOLBOX
                         ), true)
                     }
                     SettingsSection("杂项") {
