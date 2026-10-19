@@ -183,6 +183,17 @@ public final class WindowFollowScale {
     private static volatile int sTrajRot;
     /** Release endTarget was RECENTS (enter recents): skip our release blend. */
     private static volatile boolean sEndRecents;
+    /** Release endTarget was NEW_TASK/LAST_TASK (quick-switch or back to
+     *  fullscreen app): use the stock settle (same as when 跟手 is off). */
+    private static volatile boolean sEndTask;
+    /** Task-release position pass-through: per-edge offset from our curve
+     *  rect to the stock rect, captured once at release. The offset decays
+     *  with the stock settle's OWN progress toward fullscreen (rate curve
+     *  identical to the settle), so the composite trajectory is the stock
+     *  easing played from our position. */
+    private static boolean sTaskOffValid;
+    private static float sTaskOffL, sTaskOffT, sTaskOffR, sTaskOffB;
+    private static final RectF sTaskS0 = new RectF();
     // interrupt anchor (v7 #4) + RT grab mode (v7.4.1)
     private static boolean sAncValid;
     private static long sAncTime;
@@ -207,6 +218,13 @@ public final class WindowFollowScale {
     // carousel canvas overlay (v7 #1/#2): screen-space target, local applied
     private static float sCarTgtX;
     private static float sCarTgtY;
+    // carousel geometry match (v8): neighbours mirror our card's scale about
+    // the stock card centre: T(p) = C_d + s*(p - C_t) -> same Y, same scale,
+    // side-by-side gap; s -> 1 after the gesture (post-end -> stock layout).
+    private static float sCarTgtS = 1f;
+    private static float sCarTgtPX;
+    private static float sCarTgtPY;
+    private static float sCarCurS = 1f;
     private static float sCarCurX;
     private static float sCarCurY;
     private static long sCarT;
@@ -439,30 +457,38 @@ public final class WindowFollowScale {
                             long now = SystemClock.uptimeMillis();
                             float tx = sCarTgtX;
                             float ty = sCarTgtY;
+                            float ts = sCarTgtS;
+                            float pivX = sCarTgtPX;
+                            float pivY = sCarTgtPY;
                             boolean fresh = now - sCarT <= CAROUSEL_STALE_MS;
                             if (!fresh) {
                                 tx = 0f;
                                 ty = 0f;
+                                ts = 1f;
                             }
                             if (Math.abs(tx) < 0.5f && Math.abs(ty) < 0.5f
+                                    && Math.abs(ts - 1f) < 0.001f
                                     && Math.abs(sCarCurX) < 0.5f
-                                    && Math.abs(sCarCurY) < 0.5f) {
+                                    && Math.abs(sCarCurY) < 0.5f
+                                    && Math.abs(sCarCurS - 1f) < 0.001f) {
                                 sCarCurX = 0f;
                                 sCarCurY = 0f;
+                                sCarCurS = 1f;
                                 return;
                             }
+                            View rv = (View) param.thisObject;
+                            float sx = rv.getScaleX();
+                            float sy = rv.getScaleY();
+                            if (!(sx > 0.05f) || !(sx < 20f)) {
+                                sx = 1f;
+                            }
+                            if (!(sy > 0.05f) || !(sy < 20f)) {
+                                sy = 1f;
+                            }
                             if (fresh) {
-                                View rv = (View) param.thisObject;
-                                float sx = rv.getScaleX();
-                                float sy = rv.getScaleY();
-                                if (!(sx > 0.05f) || !(sx < 20f)) {
-                                    sx = 1f;
-                                }
-                                if (!(sy > 0.05f) || !(sy < 20f)) {
-                                    sy = 1f;
-                                }
                                 sCarCurX = tx / sx;
                                 sCarCurY = ty / sy;
+                                sCarCurS = ts;
                             } else {
                                 long dt = now - sCarDrawT;
                                 if (dt < 0L || dt > 200L) {
@@ -471,20 +497,32 @@ public final class WindowFollowScale {
                                 float f = (float) Math.exp(-dt / (float) CAROUSEL_TAU_MS);
                                 sCarCurX *= f;
                                 sCarCurY *= f;
+                                sCarCurS = 1f + (sCarCurS - 1f) * f;
                                 if (Math.abs(sCarCurX) < 0.5f) {
                                     sCarCurX = 0f;
                                 }
                                 if (Math.abs(sCarCurY) < 0.5f) {
                                     sCarCurY = 0f;
                                 }
+                                if (Math.abs(sCarCurS - 1f) < 0.001f) {
+                                    sCarCurS = 1f;
+                                }
                             }
                             sCarDrawT = now;
-                            if (sCarCurX == 0f && sCarCurY == 0f) {
+                            if (sCarCurX == 0f && sCarCurY == 0f
+                                    && sCarCurS == 1f) {
                                 return;
                             }
                             Canvas canvas = (Canvas) param.args[0];
                             canvas.save();
                             canvas.translate(sCarCurX, sCarCurY);
+                            if (sCarCurS != 1f) {
+                                // scale about the stock card centre (panel
+                                // pivot / viewScale -> local), AFTER the
+                                // translate: T(p) = C_d + s*(p - C_t).
+                                canvas.scale(sCarCurS, sCarCurS,
+                                        pivX / sx, pivY / sy);
+                            }
                             saved = true;
                         } catch (Throwable t) {
                             if (!sCarErrored) {
@@ -693,6 +731,39 @@ public final class WindowFollowScale {
                         t = 0f;
                         desS = new RectF(curS);
                         dbgWfs("REL instant (recents) udAge=" + udAge);
+                    } else if (sEndTask) {
+                        // Quick-switch (NEW_TASK) / swipe-down back to the
+                        // fullscreen app (LAST_TASK): play the stock settle,
+                        // exactly as when 跟手 (KEY_WIN_SCALE) is off -- but
+                        // PASS OUR POSITION: capture the per-edge offset from
+                        // our curve rect (where the window is visually) to
+                        // the stock rect once at release. The offset decays
+                        // with the settle's OWN progress toward fullscreen
+                        // (k = 1 - p), so the composite is V = W0 + p*(E-W0):
+                        // the stock easing curve, played from our position.
+                        RectF relS = rot == 0 ? sRelDes : toPanel(sRelDes, rot, w, h);
+                        if (!sTaskOffValid) {
+                            sTaskOffValid = true;
+                            sTaskS0.set(curS);
+                            sTaskOffL = relS.left - curS.left;
+                            sTaskOffT = relS.top - curS.top;
+                            sTaskOffR = relS.right - curS.right;
+                            sTaskOffB = relS.bottom - curS.bottom;
+                        }
+                        float p = stockSettleProgress(curS, w, h);
+                        float kt = 1f - (float) (now - sEndTime)
+                                / (float) END_BLEND_MS;
+                        float k = Math.min(clamp01(1f - p), clamp01(kt));
+                        t = 0f;
+                        desS = new RectF(
+                                curS.left + sTaskOffL * k,
+                                curS.top + sTaskOffT * k,
+                                curS.right + sTaskOffR * k,
+                                curS.bottom + sTaskOffB * k);
+                        dbgWfs("REL task p=" + p + " k=" + k
+                                + " off=" + ((int) sTaskOffL) + "," + ((int) sTaskOffT)
+                                + "," + ((int) sTaskOffR) + "," + ((int) sTaskOffB)
+                                + " udAge=" + udAge);
                     } else {
                         // Release: blend our snapshotted rect into the stock
                         // settle path (position AND size), smoothstepped.
@@ -803,13 +874,17 @@ public final class WindowFollowScale {
                     }
                 }
 
-                // Carousel follow target (v7 #1/#2): neighbours keep the
-                // final-layout gap beside our card; consumed by the
-                // dispatchDraw hook. Exactly (des.center - taskRect.center),
-                // viewScale-compensated at draw time. Panel space (both
-                // desS and taskRect are panel; identical in portrait).
+                // Carousel follow target (v8): neighbours mirror our card's
+                // geometry -- T(p) = C_d + s*(p - C_t): same Y, same scale,
+                // side-by-side gap; consumed by the dispatchDraw hook, and
+                // reset to the stock layout (carTarget(0)) after the gesture.
+                float carS = desS.height() / (float) taskRect.height();
+                if (!(carS > 0.05f) || !(carS < 20f)) {
+                    carS = 1f;
+                }
                 carTarget(desS.centerX() - taskRect.exactCenterX(),
-                        desS.centerY() - taskRect.exactCenterY(), now);
+                        desS.centerY() - taskRect.exactCenterY(),
+                        carS, taskRect.exactCenterX(), taskRect.exactCenterY(), now);
 
                 RectF des = rot == 0 ? desS : toVisual(desS, rot, w, h);
                 float a = des.width() / cur.width();
@@ -1011,8 +1086,18 @@ public final class WindowFollowScale {
 
     /** Carousel target update (screen space). */
     private static void carTarget(float tx, float ty, long now) {
+        carTarget(tx, ty, 1f, 0f, 0f, now);
+    }
+
+    /** Geometry-matching carousel target: neighbours map T(p) = C_d +
+     *  s*(p - C_t) -- same Y and scale as our warped card, side by side. */
+    private static void carTarget(float tx, float ty, float s,
+            float pivX, float pivY, long now) {
         sCarTgtX = tx;
         sCarTgtY = ty;
+        sCarTgtS = s;
+        sCarTgtPX = pivX;
+        sCarTgtPY = pivY;
         sCarT = now;
     }
 
@@ -1028,6 +1113,38 @@ public final class WindowFollowScale {
      *   delta=1: (x_v, y_v) = (y_p, w - x_p)
      *   delta=3: (x_v, y_v) = (h - y_p, x_p)
      */
+    /** Stock settle progress toward the fullscreen rect (0,0,w,h), per-edge
+     *  averaged from the release-time snapshot sTaskS0. Drives the task
+     *  release offset decay so its rate curve matches the settle itself. */
+    private static float stockSettleProgress(RectF curS, int w, int h) {
+        float sum = 0f;
+        int n = 0;
+        float d = -sTaskS0.left; // E.left = 0
+        if (Math.abs(d) > 1f) {
+            sum += (curS.left - sTaskS0.left) / d;
+            n++;
+        }
+        d = -sTaskS0.top; // E.top = 0
+        if (Math.abs(d) > 1f) {
+            sum += (curS.top - sTaskS0.top) / d;
+            n++;
+        }
+        d = w - sTaskS0.right;
+        if (Math.abs(d) > 1f) {
+            sum += (curS.right - sTaskS0.right) / d;
+            n++;
+        }
+        d = h - sTaskS0.bottom;
+        if (Math.abs(d) > 1f) {
+            sum += (curS.bottom - sTaskS0.bottom) / d;
+            n++;
+        }
+        if (n == 0) {
+            return 1f;
+        }
+        return clamp01(sum / (float) n);
+    }
+
     private static int rotOf(Object tvs) {
         try {
             Object os = fOrientationState.get(tvs);
@@ -1182,17 +1299,22 @@ public final class WindowFollowScale {
             }
             Object endTarget = mGetEndTarget.invoke(gs);
             if (endTarget == null) {
-                if (sEndSet) {
-                    sEndSet = false; // fresh GestureState -> new gesture
-                    sEndTime = 0L;
-                    sRelDesValid = false;
-                    sEndRecents = false;
-                    resetAnchor();
-                }
+                    if (sEndSet) {
+                        sEndSet = false; // fresh GestureState -> new gesture
+                        sEndTime = 0L;
+                        sRelDesValid = false;
+                        sEndRecents = false;
+                        sEndTask = false;
+                        sTaskOffValid = false;
+                        resetAnchor();
+                    }
             } else if (!sEndSet) {
                 sEndSet = true;
                 sEndTime = now;
-                sEndRecents = "RECENTS".equals(endTarget.toString());
+                String et = endTarget.toString();
+                sEndRecents = "RECENTS".equals(et);
+                sEndTask = "NEW_TASK".equals(et) || "LAST_TASK".equals(et);
+                sTaskOffValid = false;
                 sRelDes.set(sLastDes);
                 sRelDesValid = sLastDesValid && !sLastDes.isEmpty();
             }

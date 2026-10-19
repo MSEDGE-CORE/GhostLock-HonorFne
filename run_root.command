@@ -73,6 +73,13 @@ echo
 # 覆盖而非存在即跳过：chain_hook.sh / ko / syms 迭代频繁，存在校验会
 # 让已部署设备拿不到新版（LSA merge 修复就卡在旧 chain_hook 上）。
 # adb push 本身即覆盖写。
+if [ ! -f "root/exploit/ghostlock" ]; then
+    echo "[错误] 未找到 root/exploit/ghostlock（exploit 二进制）。"
+    echo "       本仓库应自带预编译产物；若你通过 git clone 获取且缺失，请先更新到最新版本；"
+    echo "       或参考 README \"重新构建\" 一节自备 Android NDK r27c 后执行:"
+    echo "         cd root/exploit && ANDROID_NDK_HOME=<NDK路径> make"
+    exit 1
+fi
 echo "[4/5] 部署设备端文件（约 20MB，覆盖同步，请稍候）..."
 "$ADB" shell "mkdir -p /data/local/tmp/ksu_fne" || exit_push
 "$ADB" push "root/exploit/ghostlock" /data/local/tmp/e || exit_push

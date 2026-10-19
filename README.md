@@ -6,17 +6,20 @@ Honor MagicOS 8.0 Launcher hook port: Advanced Transition Animations + Gesture E
 
 ```
 GhostLock-HonorFne/
-├── run_root.bat               # Windows 一键脚本（依赖检查→连接→部署→提权→结果报告）
+├── run_root.bat               # Windows 一键脚本（依赖检查→USB连接→部署→提权→管理器安装→结果报告）
 ├── run_root.command           # macOS 一键脚本（同 run_root.bat，双击运行）
 ├── root/                       # 临时 root（per-boot，重启失效）
 │   ├── exploit/                #   GhostLock 提权 exploit 源码与二进制（CVE-2026-43499）
 │   │                           #   构建产物 e / ghostlock；main.c 内嵌 .ghostlock_root.sh
 │   ├── host-scripts/           #   macOS 端驱动脚本
-│   │   ├── run_forever.sh      #     外循环：反复拉起 run_w2.sh 直到 root 落地
-│   │   ├── run_w2.sh           #     W1/W2 cred-write runner（settle → W1 --write1 → W2）
+│   │   ├── run_forever.sh      #     外循环：反复拉起 run_w2.sh 直到 root 落地（tee 实时回显）
+│   │   ├── run_w2.sh           #     W1/W2 cred-write runner（settle → W1 --write1 → W2，全程实时日志）
+│   │   ├── wait_ksu.sh         #     KSU 晚加载等待：轮询 + chain_status/chain.log 增量实时显示
+│   │   ├── install_managers.sh #     KSU 成功后自动安装 KernelSU 管理器 + ZygiskNext + LSPosed
 │   │   └── gl_*.sh / shift*.sh #     早期 grind 实验脚本（MCAST_SHIFT 扫描等）
 │   └── ksu-late-load/          #   KernelSU 晚加载链（root 子进程执行）
-│       ├── chain_hook.sh       #     主链：fake kallsyms → magiskpolicy → insmod kernelsu.ko → ksud 分阶段启动
+│       ├── chain_hook.sh       #     主链：real kallsyms 合并校验 → magiskpolicy → insmod kernelsu.ko
+│       │                       #     → ksud 分阶段启动；支持 DRY_RUN=1 只读验证；slidemismatch 自动 dump
 │       ├── kernelsu.ko / ksud / magiskpolicy / ksu_rules   # 设备端物料（从设备拉回）
 │       ├── fne_syms.txt        #     运行时 KASLR 重定基的符号表源（生成 fake_ksyms.txt）
 │       ├── load_ko / kmsg_dumper                       # insmod loader 与 kmsg 捕获工具
@@ -25,10 +28,9 @@ GhostLock-HonorFne/
 │       └── netfix_packet/      #     网络/状态栏/导航栏/AOD 修复（16 行 sepolicy.rule
 │                               #     + LSPosed daemon tmpfs 补丁，详见 §netfix_packet 模块）
 ├── hooks/
-│   └── launcher/               # 桌面 hook：HnLauncherPort LSPosed 模块
-│                               #   （V17 特性移植：跟手缩放/物理落桌/连续切换/负一屏保持等）
-│                               # SystemUI hook（占位，待开发）
-├── deploy/                     # 一次性安装物料（KSU Manager / LSPosed / ZygiskNext）
+│   └── launcher/               # 桌面/SystemUI hook：HnLauncherPort LSPosed 模块
+│                               #   （V17 特性移植 + 控制中心动效优化等 SystemUI hook）
+├── deploy/                     # 自动安装物料（KSU Manager / LSPosed / ZygiskNext，KSU 成功后自动装）
 └── docs/
     └── README_分析说明.md      # 详细分析（提权原理、W1/W2、KSU 晚加载）
 ```
@@ -41,9 +43,12 @@ GhostLock-HonorFne/
   `5.4.295-qgki-*`（MagicOS 8.0.2xx，含 `g0fb2656b2b50`/8.0.224 实机内核，共 10 个已知构建）。
 - Host：macOS 或 Windows + adb；重建 exploit 另需 Android NDK r27c（自备）。
   - **Windows**：安装 [Git for Windows](https://git-scm.com/download/win)（提供 Git Bash）+ [platform-tools](https://developer.android.com/tools/releases/platform-tools)（adb 加入 PATH）。
-- 一次性安装（保留在设备上，重启不丢，物料在本仓库 `deploy/`）：
-  - `deploy/KernelSU-manager.apk`——root 链用它定位 `libksud.so` 并设置 `persist.adb.tcp.port`；
-  - `deploy/LSPosed-zygisk.zip` + `deploy/ZygiskNext.zip`（经 KSU 模块方式安装）——hooks 的载体。
+  - **连接方式：仅 USB**（WiFi/网络 adb 已移除）。
+- KSU 成功后自动安装的管理器物料（在本仓库 `deploy/`，脚本自动装，无需手动）：
+  - `deploy/KernelSU-manager.apk`——KSU 管理器（已装则跳过）。
+  - `deploy/LSPosed-zygisk.zip` + `deploy/ZygiskNext.zip`——经 `/data/adb/modules` 自动部署
+    （主机解压读 module.prop 取 id 后推送，无条件覆盖同步）；LSPosed 管理器内嵌于模块，
+    激活后经通知栏快捷方式进入。
 
 ### per-boot root
 
@@ -77,22 +82,25 @@ adb shell "su 0 grep kernelsu /proc/modules"    # 有输出即 KSU 已加载
 
 ```
 [1/5] 检查依赖        adb（Windows 另需 Git Bash）是否就绪
-[2/5] 连接设备        选择 USB 或 WiFi（输入手机 IP，端口 5555）
+[2/5] 连接设备        USB 连接（等待设备接入并授权）
 [3/5] root 状态检查   KernelSU 已加载则同步 netfix_packet 后直接退出，不重复提权
-[4/5] 部署检查        首次使用自动推送 e、ksu_fne 全套物料；netfix_packet 模块
-                      不做存在校验，每次运行都重新传输（体积小，保证修复同步）
-[5/5] 运行提权        bash run_forever.sh（W1 → W2 → KSU 晚加载），结束报告结果
-                      成功后自动把 netfix_packet 合并同步进 /data/adb/modules
+[4/5] 部署            无条件覆盖推送 e、ksu_fne 全套物料（约 20MB）与 netfix_packet
+                      模块——不做存在校验，任何文件迭代即装即生效
+[5/5] 运行提权        bash run_forever.sh（W1 → W2 → KSU 晚加载），全程实时显示日志：
+                      W1/W2 exploit 输出增量回显 + 阶段横幅 + settle/重启状态；
+                      提权后等待 KSU 晚加载链（最长 180s），实时增量显示设备端
+                      chain_status 与 chain.log，超时自动附 chain/kmsg 末尾日志
+[+]  成功收尾         KSU 就绪后自动安装管理器（KernelSU 管理器 APK + ZygiskNext +
+                      LSPosed 模块，见 install_managers.sh），随后询问是否安装
+                      桌面修改（HnLauncherPort.apk，默认跳过，不写任何设置）
 ```
+
+- **不要并发跑两个 grind**。
+- **不要更换 KernelSU 管理器版本 或 尝试升级 KernelSU 内核**
 
 #### 资源手动部署
 
-手动方式（等效）：在 `root\host-scripts` 目录右键 **"Git Bash Here"**：
-
-```sh
-adb connect <手机IP>:5555    # WiFi 方式；USB 免此步
-bash run_forever.sh
-```
+手动方式（等效）：USB 连接后，在 `root\host-scripts` 目录右键 **"Git Bash Here"**，运行 `bash run_forever.sh`。
 
 首次使用须先推送全套物料：
 
@@ -159,30 +167,11 @@ adb shell "su 0 sh -c 'mkdir -p /data/adb/modules/netfix_packet && cp -rf /data/
 cd ~/Documents/GhostLockHonorFne/GhostLock-HonorFne/hooks/launcher
 sh build.sh                                   # 产物 out/HnLauncherPort.apk
 adb install -r out/HnLauncherPort.apk
-# LSPosed Manager → 模块 → HnLauncherPort → 启用，作用域勾选「荣耀桌面」
+# LSPosed Manager → 模块 → HnLauncherPort → 启用，作用域勾选「荣耀桌面」+「系统界面」
 adb shell "su 0 sh -c 'kill \$(pidof com.hihonor.android.launcher)'"   # 重载桌面使模块生效
 ```
 
-功能开关（Settings.Global，实时读取，免重启模块）：
-
-```sh
-adb shell "su 0 sh -c 'settings put global hn_port_<key> 1'"
-```
-
-| key | 功能 |
-|-----|------|
-| `motion` | 应用启动关闭动效优化 |
-| `icon_hide` | 大文件夹打开应用时隐藏对应图标 |
-| `win_scale` | 锚点优化 |
-| `parallel` | 连续切换应用 |
-| `blur` | 高级模糊 |
-| `adv_unlock_anim` | 高级解锁动画 |
-| `onestep_threshold` | 小窗/分屏阈值优化 |
-| `keep_hiboard` | 负一屏/资源库保持 |
-| `disable_icon_card` | 禁用图标上滑卡片 |
-| `win_debug` | 跟手诊断日志 |
-
-改完杀桌面进程即可生效：`am force-stop` 无效，须用上面的 `kill`。
+一键脚本 KSU 成功后也会询问是否自动安装该 APK。
 
 ### 重新构建（可选，仓库已含全部预编译产物）
 

@@ -51,6 +51,21 @@ echo.
 rem ---------- 4/5 部署（无条件覆盖） ----------
 rem 覆盖而非存在即跳过：chain_hook.sh / ko / syms 迭代频繁，存在校验会
 rem 让已部署设备拿不到新版（LSA merge 修复就卡在旧 chain_hook 上）。
+if not exist "root\exploit\ghostlock" (
+    echo [错误] 未找到 root\exploit\ghostlock（exploit 二进制）。
+    echo        本仓库应自带预编译产物；若你通过 git clone 获取且缺失，
+    echo        请先更新到最新版本；或参考 README "重新构建" 一节自备
+    echo        Android NDK r27c 后执行:  cd root\exploit ^&^& ANDROID_NDK_HOME=.. make
+    pause
+    exit /b 1
+)
+for %%F in (chain_hook.sh kernelsu.ko ksud magiskpolicy ksu_rules load_ko kmsg_dumper fne_syms.txt) do (
+    if not exist "root\ksu-late-load\%%F" (
+        echo [错误] 未找到 root\ksu-late-load\%%F
+        pause
+        exit /b 1
+    )
+)
 echo [4/5] 部署设备端文件（约 20MB，覆盖同步，请稍候）...
 adb shell "mkdir -p /data/local/tmp/ksu_fne"
 adb push "root/exploit/ghostlock" /data/local/tmp/e

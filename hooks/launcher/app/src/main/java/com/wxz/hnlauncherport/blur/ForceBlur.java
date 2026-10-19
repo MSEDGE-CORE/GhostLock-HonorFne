@@ -1,6 +1,8 @@
 package com.wxz.hnlauncherport.blur;
 
 import android.animation.ValueAnimator;
+import android.graphics.RectF;
+import android.view.View;
 import android.view.animation.LinearInterpolator;
 import android.view.animation.PathInterpolator;
 
@@ -244,6 +246,18 @@ public final class ForceBlur {
                                 if (!Port.on(Port.KEY_BLUR)) {
                                     return;
                                 }
+                                try {
+                                    Object probeMgr = param.thisObject;
+                                    float probeLast = XposedHelpers.getFloatField(
+                                            probeMgr, "mLastBlurFraction");
+                                    int[] probePol = (int[]) XposedHelpers.getObjectField(
+                                            probeMgr, "mPolicyValue");
+                                    Port.log("rBFProbe f=" + param.args[0] + " z="
+                                            + param.args[1] + " last=" + probeLast
+                                            + " pol0=" + (probePol == null ? -1 : probePol[0]));
+                                } catch (Throwable t) {
+                                    Port.log("rBFProbe failed", t);
+                                }
                                 if ((Float) param.args[0] != 0.0f) {
                                     return; // only intercept exit kills
                                 }
@@ -335,6 +349,50 @@ public final class ForceBlur {
                         });
             } catch (Throwable t) {
                 Port.log("ForceBlur icon-settle hook failed", t);
+            }
+
+            // Swipe-up return-home blur restore. The icon-back path re-blurs
+            // the desktop before fading (QuickstepAppTransitionManagerImpl
+            // -> IconBackAnimation.startBlurAnimation -> resetBlurFraction
+            // (1.0f, true)), but the createWindowAnimationToHome path taken
+            // when swiping up right after the open animation settles only
+            // posts the exit fade (lambda$createWindowAnimationToHome$2 ->
+            // changeScene(2,0,false,duration/3)) with no re-enter; with the
+            // open-completion kill already at 0 the fade runs 0 -> 0 and the
+            // whole return shows an unblurred desktop. Re-enter blur here
+            // when it is already gone so the exit fade starts from 1.
+            try {
+                Class<?> handlerCls = XposedHelpers.findClass(
+                        "com.hihonor.android.launcher.extension.quickstep"
+                                + ".HnLauncherSwipeHandlerV2", cl);
+                Class<?> lmReturn = XposedHelpers.findClass(LEVEL_MGR, cl);
+                XposedHelpers.findAndHookMethod(handlerCls,
+                        "createWindowAnimationToHome",
+                        View.class, RectF.class, RectF.class,
+                        boolean.class, boolean.class, new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                                if (!Port.on(Port.KEY_BLUR)) {
+                                    return;
+                                }
+                                try {
+                                    Object mgr = XposedHelpers.callStaticMethod(
+                                            lmReturn, "instance");
+                                    float last = XposedHelpers.getFloatField(
+                                            mgr, "mLastBlurFraction");
+                                    if (last <= 0.0f) {
+                                        XposedHelpers.callMethod(mgr,
+                                                "resetBlurFraction", 1.0f, Boolean.TRUE);
+                                        Port.log("ForceBlur return-home re-blur");
+                                    }
+                                } catch (Throwable t) {
+                                    Port.log("ForceBlur return-home re-blur failed", t);
+                                }
+                            }
+                        });
+                Port.log("ForceBlur return-home restore hooked");
+            } catch (Throwable t) {
+                Port.log("ForceBlur return-home restore hook failed", t);
             }
 
             // 搜索页(全局搜索)高级模糊强制启用. V14 进入搜索页的窗口模糊
