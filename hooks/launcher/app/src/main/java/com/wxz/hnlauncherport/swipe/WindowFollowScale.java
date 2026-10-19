@@ -149,6 +149,8 @@ public final class WindowFollowScale {
     private static final long GRAB_TAU_MS = 40L;
     /** Carousel target considered stale this long after the last TVS frame. */
     private static final long CAROUSEL_STALE_MS = 120L;
+    /** Max silence (no carTarget value change) before the override releases. */
+    private static final long CAR_CHG_MS = 64L;
     /** Carousel exponential decay time constant once stale. */
     private static final long CAROUSEL_TAU_MS = 60L;
     /** Velocity sample window (ms) for the release velocity tracker. */
@@ -238,6 +240,35 @@ public final class WindowFollowScale {
     private static long sCarDrawT;
     private static boolean sCarErrored;
     private static int sCarProbeN;
+    private static long sCarBeatT;
+    /** RecentsView seen via AbsSwipeUpHandler.mRecentsView (view-prop override target). */
+    private static volatile View sCarRv;
+    private static boolean sCarPivSaved;
+    private static float sCarPivSX;
+    private static float sCarPivSY;
+    private static boolean sCarWErr;
+    private static long sCarWLogT;
+    private static long sCarW2LogT;
+    private static boolean sCarWasActive;
+    private static long sCarChgT;
+    private static boolean sCarInWrite;
+
+    /** Max-|ty| among the first few RecentsView children (stock's uniform
+     *  per-card translationY during the swipe). */
+    private static float childNow(View rv) {
+        float childTy = 0f;
+        if (rv instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) rv;
+            int n = vg.getChildCount();
+            for (int i = 0; i < n && i < 4; i++) {
+                float cty = vg.getChildAt(i).getTranslationY();
+                if (Math.abs(cty) > Math.abs(childTy)) {
+                    childTy = cty;
+                }
+            }
+        }
+        return childTy;
+    }
 
     private static boolean sLoggedOnce;
 
@@ -470,7 +501,18 @@ public final class WindowFollowScale {
         // stale target self-decays to zero within ~100ms of the last TVS
         // frame. Translate is (des.center - taskRect.center) / viewScale so
         // the neighbours keep exactly the final-layout gap beside our card.
-        Class<?> recentsViewClass = XposedHelpers.findClass(RECENTS_VIEW, cl);
+        // HnRecentsView OVERRIDES dispatchDraw (decompiled :2727) and draws
+        // the visible pages itself (drawVisibleChild) WITHOUT calling super -
+        // a hook on the base RecentsView.dispatchDraw never fires. Hook the
+        // Hn override (fallback: base class for non-Hn recents hosts).
+        Class<?> recentsViewClass;
+        try {
+            recentsViewClass = XposedHelpers.findClass(
+                    "com.hihonor.android.launcher.extension.quickstep.views.HnRecentsView", cl);
+        } catch (Throwable t) {
+            recentsViewClass = XposedHelpers.findClass(RECENTS_VIEW, cl);
+        }
+        Port.log(TAG + " carousel draw hook on " + recentsViewClass.getName());
         XposedHelpers.findAndHookMethod(recentsViewClass, "dispatchDraw", Canvas.class,
                 new XC_MethodHook() {
                     private boolean saved;
@@ -480,6 +522,21 @@ public final class WindowFollowScale {
                         saved = false;
                         try {
                             long now = SystemClock.uptimeMillis();
+                            // unconditional heartbeat: is this hook invoked
+                            // at all (any RecentsView drawing, gesture or not)?
+                            if (dbgOn() && now - sCarBeatT > 500L) {
+                                sCarBeatT = now;
+                                Log.d("HnWFS", "CAR dd cls=" + param.thisObject.getClass().getSimpleName());
+                            }
+                            // Mutual exclusion (v16.1): when the view-prop
+                            // override (hook 4b) is live it applies T at the
+                            // RecentsView level every frame - applying T again
+                            // here would double the shift (one extra card
+                            // width) and jitter. The canvas path stays only
+                            // as a fallback while sCarRv is unknown.
+                            if (sCarRv != null && Port.on(Port.KEY_WIN_SCALE)) {
+                                return;
+                            }
                             float tx = sCarTgtX;
                             float ty = sCarTgtY;
                             float ts = sCarTgtS;
@@ -616,6 +673,73 @@ public final class WindowFollowScale {
                         }
                     }
                 });
+
+        // ---- Hook 4b: carousel neighbour override via view props ----
+        // Hardware rendering applies RecentsView's own view properties
+        // (scale/translation, written per frame by stock's normal playback +
+        // resistance controllers) at RenderNode replay - the dispatchDraw
+        // canvas wrap only re-records on invalidate (~1Hz), so it can never
+        // cancel them. Instead: AFTER stock's per-frame writes
+        // (onCurrentShiftUpdated during the drag, AnimatorControllerWith-
+        // Resistance.setProgress during quick-switch and the settle),
+        // absolutely overwrite pivot/scale/translation with the view-prop
+        // equivalent of our 0.2-anchored mapping T(p) = C_d + s*(p - C_t):
+        //   setPivot(C_t), setScale(s), setTranslation(C_d - C_t)
+        // Stock keeps writing every frame, so the moment our curve goes
+        // stale (TVS stops / identity target / HOME end) stock's own
+        // absolute writes re-own the view - nothing persists.
+        // HnLauncherSwipeHandlerV2 OVERRIDES onCurrentShiftUpdated (:1274)
+        // WITHOUT calling super - hooking the base AbsSwipeUpHandler method
+        // never fires. Hook the Hn override (it is the invoked one); its
+        // mRecentsView field lives on AbsSwipeUpHandler (hierarchy walk).
+        Class<?> handlerClass = XposedHelpers.findClass(HANDLER, cl);
+        final Field fCarRv = field(handlerClass, "mRecentsView");
+        Class<?> hnHandlerClass = XposedHelpers.findClass(HN_HANDLER, cl);
+        XposedHelpers.findAndHookMethod(hnHandlerClass, "onCurrentShiftUpdated",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        try {
+                            Object rv = fCarRv.get(param.thisObject);
+                            if (rv instanceof View) {
+                                sCarRv = (View) rv;
+                            }
+                        } catch (Throwable ignore) {
+                        }
+                        applyCarouselOverride("hnOcsu");
+                    }
+                });
+        Class<?> acwrClass = XposedHelpers.findClass(
+                "com.android.quickstep.util.AnimatorControllerWithResistance", cl);
+        XposedHelpers.findAndHookMethod(acwrClass, "setProgress",
+                float.class, float.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        applyCarouselOverride("acwr");
+                    }
+                });
+        // ---- Hook 4c: rv property-write redirect (v16.8) ----
+        // The acwr/ocsu hooks only fire on setProgress paths; stock has
+        // OTHER writers (state animations, direct property animators) that
+        // write rv scale/translation without setProgress. Every such
+        // uncovered frame showed stock's value for one frame -> visible
+        // jump/flicker mid-settle. Redirect at the View property level:
+        // ANY write to the cached rv while our target is live gets
+        // immediately re-applied on top (applyCarouselOverride writes our
+        // values last-writer-wins). sCarInWrite guards recursion.
+        XC_MethodHook propHook = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                if (param.thisObject != sCarRv || sCarInWrite) {
+                    return;
+                }
+                applyCarouselOverride("vprop");
+            }
+        };
+        XposedHelpers.findAndHookMethod(View.class, "setScaleX", float.class, propHook);
+        XposedHelpers.findAndHookMethod(View.class, "setScaleY", float.class, propHook);
+        XposedHelpers.findAndHookMethod(View.class, "setTranslationX", float.class, propHook);
+        XposedHelpers.findAndHookMethod(View.class, "setTranslationY", float.class, propHook);
 
         // ---- Hook 5: return-home pipeline injection (v7 #3) ----
         installReturnHomeInjection(cl);
@@ -938,14 +1062,16 @@ public final class WindowFollowScale {
                 }
 
                 // Carousel follow target (v8): neighbours mirror our card's
-                // geometry -- T(p) = C_d + s*(p - C_t): same Y, same scale,
-                // side-by-side gap; consumed by the dispatchDraw hook, and
-                // reset to the stock layout (carTarget(0)) after the gesture.
+                // geometry -- T(p) = C_d + s*(p - C_t): same Y, same scale.
+                // X translation stays ZERO: stock's list scroll already
+                // aligns the neighbours horizontally (quick-switch), adding
+                // (desS.cx - taskRect.cx) double-shifts by ~a card width and
+                // knocks the settle's centred card index off by one.
                 float carS = desS.height() / (float) taskRect.height();
                 if (!(carS > 0.05f) || !(carS < 20f)) {
                     carS = 1f;
                 }
-                carTarget(desS.centerX() - taskRect.exactCenterX(),
+                carTarget(0f,
                         desS.centerY() - taskRect.exactCenterY(),
                         carS, taskRect.exactCenterX(), taskRect.exactCenterY(), now);
 
@@ -1154,10 +1280,157 @@ public final class WindowFollowScale {
         carTarget(tx, ty, 1f, 0f, 0f, now);
     }
 
+    /**
+     * Per-frame absolute overwrite of RecentsView view properties with our
+     * 0.2-anchored single-stage geometry (see hook 4b). Runs AFTER stock's
+     * writes each frame; stock re-owns the view the moment we go inactive.
+     */
+    private static void applyCarouselOverride(String src) {
+        try {
+            long now = SystemClock.uptimeMillis();
+            View rv = sCarRv;
+            if (dbgOn() && now - sCarWLogT > 200L) {
+                sCarWLogT = now;
+                StringBuilder sb = new StringBuilder("CARo ").append(src)
+                        .append(" rv=").append(rv == null ? "null" : "ok")
+                        .append(" fd=").append(sFingerDown)
+                        .append(" fresh=").append(now - sCarT <= CAROUSEL_STALE_MS)
+                        .append(" end=").append(sEndSet ? (sEndRecents ? "REC" : (sEndTask ? "TSK" : "HOM")) : "N")
+                        .append(" t=").append((int) sCarTgtX).append(',').append((int) sCarTgtY)
+                        .append(" s=").append(String.format("%.3f", sCarTgtS));
+                if (rv instanceof ViewGroup) {
+                    ViewGroup vg = (ViewGroup) rv;
+                    int n = vg.getChildCount();
+                    sb.append(" scx=").append(vg.getScrollX());
+                    sb.append(" kids=").append(n);
+                    for (int i = 0; i < n && i < 4; i++) {
+                        View c = vg.getChildAt(i);
+                        sb.append(" c").append(i).append('[')
+                                .append((int) c.getTranslationX()).append(',')
+                                .append((int) c.getTranslationY())
+                                .append(' ').append(String.format("%.2f", c.getScaleY()))
+                                .append(']');
+                    }
+                }
+                Log.d("HnWFS", sb.toString());
+            }
+            if (rv == null) {
+                return;
+            }
+            if (!Port.on(Port.KEY_WIN_SCALE)) {
+                restoreCarouselPivot(rv);
+                return;
+            }
+            boolean fresh = now - sCarT <= CAROUSEL_STALE_MS;
+            float tx = sCarTgtX;
+            float ty = sCarTgtY;
+            float s = sCarTgtS;
+            // identity target = our curve is off (stock anim owns) - never
+            // overwrite a live stock animation with identity.
+            boolean meaningful = Math.abs(tx) > 0.5f || Math.abs(ty) > 0.5f
+                    || Math.abs(s - 1f) > 0.001f;
+            // Liveness is the target's own freshness (TVS.apply still
+            // running): this bridges the finger-up -> endTarget-decided gap
+            // where sFingerDown is already false but sEndSet is not yet set -
+            // going inactive there let stock's resistance stage (big upward
+            // TASK_SECONDARY_TRANSLATION) flash in as a second stage. Only a
+            // decided HOME end (list fades out under stock's own animation)
+            // opts out explicitly.
+            boolean homeEnd = sEndSet && !sEndRecents && !sEndTask;
+            // Deactivate on a FROZEN target (no carTarget value change for
+            // CAR_CHG_MS), not just on time expiry: once TVS.apply stops,
+            // the last target stays "fresh" for CAROUSEL_STALE_MS while
+            // stock keeps writing toward its final values - our frozen
+            // writes clobbered them (visual freeze frame, then the
+            // landing bounce when stock's final re-appeared). TVS frames
+            // arrive every ~16ms while live, so 64ms without ANY change
+            // means the source stopped: release stock immediately.
+            boolean live = fresh && now - sCarChgT <= CAR_CHG_MS;
+            // Override window v16.9: finger-down phase plus the release->
+            // endTarget-decision bridge ONLY. Once sEndSet fires the end
+            // target is decided and stock's settle animation owns the view:
+            // redirecting its frames left rv stuck at OUR last values after
+            // the animator finished (stock's final was clobbered) - landing
+            // jump on the delayed correction and persistent wrong rv props
+            // during landscape browse (tap/scroll mismatch). Let settle run
+            // stock-clean from the decision point on.
+            boolean holding = sFingerDown && !sEndSet;
+            boolean bridge = !sFingerDown && !sEndSet;
+            boolean active = (holding || bridge) && live && meaningful && !homeEnd;
+            // Stock additionally animates a UNIFORM per-TaskView
+            // translationY during the swipe (observed up to -615px,
+            // identical across cards) - the "second stage" upward
+            // jump the rv-level override cannot reach. It composes
+            // INSIDE our rv transform (child drawn at layout+childTy),
+            // so compensate exactly at the rv translation:
+            //   s*childTy + tau = carTy  =>  tau = carTy - s*childTy
+            float childTy = childNow(rv);
+            if (active) {
+                if (!sCarPivSaved) {
+                    sCarPivSaved = true;
+                    sCarPivSX = rv.getPivotX();
+                    sCarPivSY = rv.getPivotY();
+                }
+                // Reentrancy guard: our own writes below re-enter the View
+                // setter hooks (hook 4c) - the guard makes those no-ops.
+                sCarInWrite = true;
+                try {
+                    rv.setPivotX(sCarTgtPX);
+                    rv.setPivotY(sCarTgtPY);
+                    rv.setScaleX(s);
+                    rv.setScaleY(s);
+                    rv.setTranslationX(tx);
+                    rv.setTranslationY(ty - s * childTy);
+                } finally {
+                    sCarInWrite = false;
+                }
+                if (dbgOn() && now - sCarW2LogT > 100L) {
+                    sCarW2LogT = now;
+                    Log.d("HnWFS", "CARw " + src + " s=" + s
+                            + " t=" + (int) tx + "," + (int) (ty - s * childTy)
+                            + " cty=" + (int) childTy
+                            + " piv=" + (int) sCarTgtPX + "," + (int) sCarTgtPY);
+                }
+            } else {
+                if (sCarWasActive && dbgOn()) {
+                    // deactivation snapshot: what the list looks like the
+                    // moment stock re-owns it (landing-bounce diagnosis)
+                    Log.d("HnWFS", "CARx " + src + " rvS=" + rv.getScaleY()
+                            + " rvT=" + (int) rv.getTranslationX() + "," + (int) rv.getTranslationY()
+                            + " cty=" + (int) childNow(rv)
+                            + " tgt t=" + (int) ty + " s=" + String.format("%.3f", s));
+                }
+                restoreCarouselPivot(rv);
+            }
+            sCarWasActive = active;
+        } catch (Throwable t) {
+            if (!sCarWErr) {
+                sCarWErr = true;
+                Port.log(TAG + " carousel override failed (once)", t);
+            }
+        }
+    }
+
+    private static void restoreCarouselPivot(View rv) {
+        if (!sCarPivSaved) {
+            return;
+        }
+        sCarPivSaved = false;
+        try {
+            rv.setPivotX(sCarPivSX);
+            rv.setPivotY(sCarPivSY);
+        } catch (Throwable ignore) {
+        }
+    }
+
     /** Geometry-matching carousel target: neighbours map T(p) = C_d +
      *  s*(p - C_t) -- same Y and scale as our warped card, side by side. */
     private static void carTarget(float tx, float ty, float s,
             float pivX, float pivY, long now) {
+        if (tx != sCarTgtX || ty != sCarTgtY || s != sCarTgtS
+                || pivX != sCarTgtPX || pivY != sCarTgtPY) {
+            sCarChgT = now;
+        }
         sCarTgtX = tx;
         sCarTgtY = ty;
         sCarTgtS = s;
