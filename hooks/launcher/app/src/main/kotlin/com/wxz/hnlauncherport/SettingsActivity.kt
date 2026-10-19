@@ -307,7 +307,7 @@ private fun SettingsScreen() {
                     }
                     SettingsSection("控制中心") {
                         SettingsSwitchItem(ToggleRow(
-                            "动效优化", "横滑切换松手时携带手指惯性",
+                            "动效优化", "卡片锚点优化，横滑切换惯性",
                             Port.KEY_CC_SPRING_VEL
                         ), true)
                         SettingsSwitchItem(ToggleRow(
