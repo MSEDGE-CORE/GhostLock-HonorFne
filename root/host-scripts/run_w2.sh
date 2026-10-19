@@ -10,15 +10,20 @@ E="/data/local/tmp/e"
 SYNC="GL_AIM_DM=1 GL_W1_ATTEMPTS=2 GL_ROUTE_ATTEMPTS=1 GL_HOLD_CHAIN=1 GL_HOLD_WAITER=1 GL_PUNCH_IN_WINDOW=1 GL_PUNCH_DELAY_USEC=0 GL_MCAST_ROUTE=1 GL_PROBE_BOOTID=0 GL_SPRAY_TEST=0 GL_STAMP_SYNC=1"
 
 run_to() { # $1=secs $2=logfile $3...=command
+  # 实时显示: 后台捕获到文件的同时 tail -f 增量回显到控制台
+  # (控制台输出经 run_forever.sh 的 tee 汇入 driver log)
   local secs=$1 logf=$2; shift 2
   "$@" > "$logf" 2>&1 &
   local pid=$!
+  tail -n +1 -f "$logf" 2>/dev/null &
+  local tpid=$!
   ( sleep "$secs"; kill "$pid" 2>/dev/null ) &
   local wd=$!
   local rc=0
   wait "$pid" || rc=$?
-  kill "$wd" 2>/dev/null
+  kill "$wd" "$tpid" 2>/dev/null
   wait "$wd" 2>/dev/null
+  wait "$tpid" 2>/dev/null
   return $rc
 }
 
@@ -52,6 +57,7 @@ for try in 1 2 3 4 5 6 7 8; do
   en=$(adb shell getenforce 2>/dev/null | tr -d '\r')
   echo "=== TRY $try ADJ=$ADJ $(date +%T) getenforce=$en ==="
   if [ "$en" != "Permissive" ]; then
+    echo "--- [W1] 关闭 SELinux (--write1), 最长 420s, TRY $try ---"
     run_to 420 "w1_try$try.log" adb shell "env $SYNC $E --write1"
     echo "w1 rc=$? : $(grep -E 'SELinux DISABLED|Write 1 failed' w1_try$try.log | tail -1)"
     en=$(adb shell getenforce 2>/dev/null | tr -d '\r')
@@ -71,6 +77,7 @@ for try in 1 2 3 4 5 6 7 8; do
   w2done=0
   while [ $w2n -lt 3 ]; do
     w2n=$((w2n+1))
+    echo "--- [W2] cred 写入 (rounds=2 ADJ=$ADJ), 第 ${w2n}/3 次, 最长 900s ---"
     run_to 900 "w2_try${try}_${w2n}.log" adb shell "env $SYNC GL_W2_ROUNDS=2 GL_W2_CRED_ADJ=$ADJ $E"
     rc=$?
     echo "w2 rc=$rc (w2 attempt $w2n) last: $(tail -2 w2_try${try}_${w2n}.log | tr '\n' ' ')"

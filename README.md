@@ -37,7 +37,7 @@ GhostLock-HonorFne/
 
 ### 前置条件
 
-- 荣耀 70（FNE-AN00），内核 `5.4.289-qgki-gf6cb1f712a6e`（MagicOS 8.0.214）或
+- 荣耀 70（FNE-AN00），内核 `5.4.289-qgki-gf6cb1f712a6e`（MagicOS 8.0.214-221）或
   `5.4.295-qgki-*`（MagicOS 8.0.2xx，含 `g0fb2656b2b50`/8.0.224 实机内核，共 10 个已知构建）。
 - Host：macOS 或 Windows + adb；重建 exploit 另需 Android NDK r27c（自备）。
   - **Windows**：安装 [Git for Windows](https://git-scm.com/download/win)（提供 Git Bash）+ [platform-tools](https://developer.android.com/tools/releases/platform-tools)（adb 加入 PATH）。
@@ -64,6 +64,7 @@ adb shell "su 0 grep kernelsu /proc/modules"    # 有输出即 KSU 已加载
 - 常用诊断：`/data/local/tmp/.ghostlock_root.log`、`$D/chain.log`、`$D/chain_status`（`ok` = 链完成）。
 - 可单独跑一轮：`./run_w2.sh`（不走外循环）；`gl_*.sh`、`shift*.sh` 为早期 shift 扫描实验脚本，正常流程用不到。
 - **不要并发跑两个 grind**。
+- **不要更换 KernelSU 管理器版本 或 尝试升级 KernelSU 内核**
 
 ### 一键脚本（Windows / macOS）和资源手动部署
 

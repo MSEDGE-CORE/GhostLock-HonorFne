@@ -7,7 +7,8 @@ touch run_w2_driver.log
 while true; do
   MARK=$(wc -l < run_w2_driver.log | tr -d ' ')
   MARK=$((MARK + 1))
-  bash run_w2.sh >> run_w2_driver.log 2>&1
+  # tee -a: 驱动日志照旧累积, 同时全量实时回显到控制台
+  bash run_w2.sh 2>&1 | tee -a run_w2_driver.log
   if tail -n +"$MARK" run_w2_driver.log | grep -q "W2 ROOT ACHIEVED\|KSU READY"; then
     echo "=== OUTER LOOP: SUCCESS $(date +%T) - stopping ===" >> run_w2_driver.log
     break

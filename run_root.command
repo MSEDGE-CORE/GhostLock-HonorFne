@@ -48,22 +48,7 @@ echo "      OK: adb 就绪（$ADB）"
 echo
 
 # ---------- 2/5 连接设备 ----------
-echo "[2/5] 连接设备"
-echo "  [1] USB 数据线"
-echo "  [2] WiFi（手机与电脑同一局域网，端口 5555）"
-read -p "请选择 1 或 2: " choice
-case "$choice" in
-    2)
-        read -p "请输入手机 IP 地址: " IP
-        if [ -z "$IP" ]; then
-            echo "[错误] 未输入 IP 地址。"
-            read -p "按回车键退出..."
-            exit 1
-        fi
-        echo "      正在连接 $IP:5555 ..."
-        "$ADB" connect "$IP:5555"
-        ;;
-esac
+echo "[2/5] 连接设备（USB）"
 if ! "$ADB" get-state >/dev/null 2>&1; then
     echo "      等待设备接入（请插好 USB 并允许 USB 调试授权）..."
     "$ADB" wait-for-device
@@ -84,31 +69,53 @@ fi
 echo "      KernelSU 未加载，继续。"
 echo
 
-# ---------- 4/5 部署检查 ----------
-echo "[4/5] 检查设备端部署..."
-NEED_DEPLOY=0
-"$ADB" shell "[ -x /data/local/tmp/e ]" >/dev/null 2>&1 || NEED_DEPLOY=1
-"$ADB" shell "[ -f /data/local/tmp/ksu_fne/chain_hook.sh ]" >/dev/null 2>&1 || NEED_DEPLOY=1
-if [ "$NEED_DEPLOY" = "0" ]; then
-    echo "      已部署，跳过。"
-else
-    echo "      首次使用，推送文件（约 20MB，请稍候）..."
-    "$ADB" shell "mkdir -p /data/local/tmp/ksu_fne" || exit_push
-    "$ADB" push "root/exploit/ghostlock" /data/local/tmp/e || exit_push
-    "$ADB" shell "chmod 755 /data/local/tmp/e"
-    for f in chain_hook.sh kernelsu.ko ksud magiskpolicy ksu_rules load_ko kmsg_dumper fne_syms.txt; do
-        "$ADB" push "root/ksu-late-load/$f" /data/local/tmp/ksu_fne/ || exit_push
-    done
-    "$ADB" shell "chmod 755 /data/local/tmp/ksu_fne/chain_hook.sh /data/local/tmp/ksu_fne/load_ko /data/local/tmp/ksu_fne/kmsg_dumper"
-    echo "      部署完成。"
-fi
+# ---------- 4/5 部署（无条件覆盖） ----------
+# 覆盖而非存在即跳过：chain_hook.sh / ko / syms 迭代频繁，存在校验会
+# 让已部署设备拿不到新版（LSA merge 修复就卡在旧 chain_hook 上）。
+# adb push 本身即覆盖写。
+echo "[4/5] 部署设备端文件（约 20MB，覆盖同步，请稍候）..."
+"$ADB" shell "mkdir -p /data/local/tmp/ksu_fne" || exit_push
+"$ADB" push "root/exploit/ghostlock" /data/local/tmp/e || exit_push
+"$ADB" shell "chmod 755 /data/local/tmp/e"
+for f in chain_hook.sh kernelsu.ko ksud magiskpolicy ksu_rules load_ko kmsg_dumper fne_syms.txt; do
+    "$ADB" push "root/ksu-late-load/$f" /data/local/tmp/ksu_fne/ || exit_push
+done
+"$ADB" shell "chmod 755 /data/local/tmp/ksu_fne/chain_hook.sh /data/local/tmp/ksu_fne/load_ko /data/local/tmp/ksu_fne/kmsg_dumper"
+echo "      部署完成。"
 
-# netfix_packet 模块体积小、迭代快：不做存在校验，每次都重新传输，
+# netfix_packet 模块体积小、迭代快：每次都重新传输，
 # 确保模块修复（sepolicy 规则 / LSPosed tmpfs 补丁）总能同步到设备。
 echo "      同步 netfix_packet 模块..."
 "$ADB" shell "rm -rf /data/local/tmp/netfix_packet" || exit_push
 "$ADB" push "root/ksu-modules/netfix_packet" /data/local/tmp/ || exit_push
 echo
+
+# ---------- 可选板块：安装桌面修改（Launcher/SystemUI hooks） ----------
+# KSU/LSPosed 成功后调用。默认跳过，选 y 安装：
+#   HnLauncherPort.apk (LSPosed 模块: 桌面布局 + 控制中心动效优化)
+install_launcher_mods() {
+    echo
+    read -p "是否安装桌面修改（HnLauncherPort）? [y/N]: " ans
+    case "$ans" in
+        y|Y)
+            if [ ! -f "hooks/launcher/out/HnLauncherPort.apk" ]; then
+                echo "      [错误] 未找到 hooks/launcher/out/HnLauncherPort.apk"
+                return 1
+            fi
+            echo "      安装 HnLauncherPort.apk ..."
+            if ! "$ADB" install -r "hooks/launcher/out/HnLauncherPort.apk" >/dev/null 2>&1; then
+                echo "      [错误] APK 安装失败"
+                return 1
+            fi
+            echo "      APK 安装成功。"
+            echo "      提示: 首次需在 LSPosed 管理器中启用模块并勾选"
+            echo "            作用域（荣耀桌面 + 系统界面），重启对应应用后生效。"
+            ;;
+        *)
+            echo "      已跳过桌面修改安装。"
+            ;;
+    esac
+}
 
 # ---------- 5/5 运行 ----------
 echo "[5/5] 开始 per-boot 提权（W1 - W2 - KSU 晚加载）"
@@ -120,18 +127,19 @@ bash "root/host-scripts/run_forever.sh"
 echo
 
 # root 落地后 detached chain_hook 还需数十秒完成 KSU 晚加载，
-# 立即检查 /proc/modules 会误报失败——轮询等待（最长 180 秒）。
-echo "等待 KSU 晚加载链完成（最长 180 秒）..."
+# 立即检查 /proc/modules 会误报失败——轮询等待（最长 180 秒），
+# 期间实时增量显示设备端 chain_status / chain.log（wait_ksu.sh）。
 KSU_UP=0
-for _ in $(seq 1 36); do
-    if "$ADB" shell "grep -q kernelsu /proc/modules" >/dev/null 2>&1; then KSU_UP=1; break; fi
-    sleep 5
-done
+if bash "root/host-scripts/wait_ksu.sh"; then KSU_UP=1; fi
 ensure_module
 if [ "$KSU_UP" = "1" ]; then
     echo "=================================================="
     echo "   [成功] KernelSU 已加载，临时 root 就绪！"
     echo "=================================================="
+    # 自动安装管理器: KernelSU 管理器 + ZygiskNext + LSPosed(内嵌管理器)
+    echo "      --- 自动安装 KSU / LSP 管理器 ---"
+    bash "root/host-scripts/install_managers.sh"
+    install_launcher_mods
 else
     echo "=================================================="
     echo "   [未成功] 本次 grind 未落地，可重新运行再试。"

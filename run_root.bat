@@ -24,18 +24,7 @@ echo       OK: adb 与 Git Bash 均已就绪
 echo.
 
 rem ---------- 2/5 连接设备 ----------
-echo [2/5] 连接设备
-echo   [1] USB 数据线
-echo   [2] WiFi（手机与电脑同一局域网，端口 5555）
-choice /c 12 /n /m "请选择 1 或 2: "
-if errorlevel 2 goto :wifi
-goto :devcheck
-:wifi
-set "IP="
-set /p "IP=请输入手机 IP 地址: "
-if "%IP%"=="" goto :bad_ip
-echo       正在连接 %IP%:5555 ...
-adb connect %IP%:5555
+echo [2/5] 连接设备（USB）
 :devcheck
 adb get-state >nul 2>nul
 if errorlevel 1 (
@@ -59,17 +48,10 @@ if not errorlevel 1 (
 echo       KernelSU 未加载，继续。
 echo.
 
-rem ---------- 4/5 部署检查 ----------
-echo [4/5] 检查设备端部署...
-set NEED_DEPLOY=0
-adb shell "[ -x /data/local/tmp/e ]" >nul 2>nul || set NEED_DEPLOY=1
-adb shell "[ -f /data/local/tmp/ksu_fne/chain_hook.sh ]" >nul 2>nul || set NEED_DEPLOY=1
-if "%NEED_DEPLOY%"=="1" goto :deploy
-echo       已部署，跳过。
-goto :sync_module
-
-:deploy
-echo       首次使用，推送文件（约 20MB，请稍候）...
+rem ---------- 4/5 部署（无条件覆盖） ----------
+rem 覆盖而非存在即跳过：chain_hook.sh / ko / syms 迭代频繁，存在校验会
+rem 让已部署设备拿不到新版（LSA merge 修复就卡在旧 chain_hook 上）。
+echo [4/5] 部署设备端文件（约 20MB，覆盖同步，请稍候）...
 adb shell "mkdir -p /data/local/tmp/ksu_fne"
 adb push "root/exploit/ghostlock" /data/local/tmp/e
 if errorlevel 1 goto :push_fail
@@ -81,7 +63,7 @@ adb shell "chmod 755 /data/local/tmp/ksu_fne/chain_hook.sh /data/local/tmp/ksu_f
 echo       部署完成。
 echo.
 
-rem netfix_packet 模块体积小、迭代快：不做存在校验，每次都重新传输，
+rem netfix_packet 模块体积小、迭代快：每次都重新传输，
 rem 确保模块修复（sepolicy 规则 / LSPosed tmpfs 补丁）总能同步到设备。
 :sync_module
 echo       同步 netfix_packet 模块...
@@ -101,16 +83,11 @@ echo.
 echo.
 
 rem root 落地后 detached chain_hook 还需数十秒完成 KSU 晚加载，
-rem 立即检查 /proc/modules 会误报失败——轮询等待（最长 180 秒）。
-echo       等待 KSU 晚加载链完成（最长 180 秒）...
-set /a KSU_WAIT=0
-:wait_ksu
-adb shell "grep -q kernelsu /proc/modules" >nul 2>nul
+rem 立即检查 /proc/modules 会误报失败——轮询等待（最长 180 秒），
+rem 期间实时增量显示设备端 chain_status / chain.log（wait_ksu.sh）。
+"%BASH%" "root/host-scripts/wait_ksu.sh"
 if not errorlevel 1 goto :ksu_ok
-set /a KSU_WAIT=KSU_WAIT+1
-if %KSU_WAIT% GEQ 36 goto :ksu_fail
-ping -n 6 127.0.0.1 >nul
-goto :wait_ksu
+goto :ksu_fail
 
 :ksu_fail
 call :ensure_module
@@ -124,8 +101,10 @@ call :ensure_module
 echo ==================================================
 echo    [成功] KernelSU 已加载，临时 root 就绪！
 echo ==================================================
-
-:done_root
+echo       --- 自动安装 KSU / LSP 管理器 ---
+"%BASH%" "root/host-scripts/install_managers.sh"
+call :install_launcher_mods
+goto :done_root
 echo.
 pause
 exit /b 0
@@ -142,15 +121,35 @@ echo        请安装 Git for Windows（https://git-scm.com/download/win）。
 pause
 exit /b 1
 
-:bad_ip
-echo [错误] 未输入 IP 地址。
-pause
-exit /b 1
-
 :push_fail
 echo [错误] 文件推送失败。请检查连接与 USB 调试授权后重试。
 pause
 exit /b 1
+
+rem ---------- 可选板块：安装桌面修改（Launcher/SystemUI hooks） ----------
+rem KSU/LSPosed 成功后调用。默认跳过，选 Y 安装：
+rem   HnLauncherPort.apk (LSPosed 模块: 桌面布局 + 控制中心动效优化)
+:install_launcher_mods
+echo.
+choice /c YN /n /m "是否安装桌面修改（HnLauncherPort）? [Y=安装 N=跳过]: "
+if errorlevel 2 (
+    echo       已跳过桌面修改安装。
+    goto :eof
+)
+if not exist "hooks\launcher\out\HnLauncherPort.apk" (
+    echo       [错误] 未找到 hooks\launcher\out\HnLauncherPort.apk
+    goto :eof
+)
+echo       安装 HnLauncherPort.apk ...
+adb install -r "hooks\launcher\out\HnLauncherPort.apk" >nul 2>nul
+if errorlevel 1 (
+    echo       [错误] APK 安装失败
+    goto :eof
+)
+echo       APK 安装成功。
+echo       提示: 首次需在 LSPosed 管理器中启用模块并勾选
+echo             作用域（荣耀桌面 + 系统界面），重启对应应用后生效。
+goto :eof
 
 rem ---------- netfix_packet 模块安装（KSU 就绪后调用） ----------
 rem /data/adb 为 root 目录，adb 直推不行：先经 /data/local/tmp 中转，su 0 合并同步装入。
