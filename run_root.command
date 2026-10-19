@@ -87,7 +87,7 @@ echo "[4/5] 部署设备端文件（约 20MB，覆盖同步，请稍候）..."
 for f in chain_hook.sh kernelsu.ko ksud magiskpolicy ksu_rules load_ko kmsg_dumper fne_syms.txt; do
     "$ADB" push "root/ksu-late-load/$f" /data/local/tmp/ksu_fne/ || exit_push
 done
-"$ADB" shell "chmod 755 /data/local/tmp/ksu_fne/chain_hook.sh /data/local/tmp/ksu_fne/load_ko /data/local/tmp/ksu_fne/kmsg_dumper"
+"$ADB" shell "chmod 755 /data/local/tmp/ksu_fne/chain_hook.sh /data/local/tmp/ksu_fne/magiskpolicy /data/local/tmp/ksu_fne/ksud /data/local/tmp/ksu_fne/load_ko /data/local/tmp/ksu_fne/kmsg_dumper"
 echo "      部署完成。"
 
 # netfix_packet 模块体积小、迭代快：每次都重新传输，

@@ -8,6 +8,7 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 
 import com.wxz.hnlauncherport.Port;
 
@@ -206,6 +207,12 @@ public final class WindowFollowScale {
     private static float sAncDy;
     private static float sAncDsig;
     private static float sAncDsigW;
+    /** Mid quick-switch: keep the captured horizontal CENTER offset for the
+     *  whole gesture (stock keeps the card's X offset; only Y/scale follow). */
+    private static boolean sAncKeepX;
+    /** Reference height at the keepX capture: the persisted X offset scales
+     *  with the main card (r.height()/sAncKeepXH as the card shrinks/grows). */
+    private static float sAncKeepXH;
     // release velocity tracker (v7 #3)
     private static long sVelT0;
     private static long sVelT;
@@ -230,6 +237,7 @@ public final class WindowFollowScale {
     private static long sCarT;
     private static long sCarDrawT;
     private static boolean sCarErrored;
+    private static int sCarProbeN;
 
     private static boolean sLoggedOnce;
 
@@ -291,6 +299,23 @@ public final class WindowFollowScale {
                         if (action == MotionEvent.ACTION_DOWN) {
                             sFingerDown = true;
                             resetGestureState();
+                            // New touch ends the previous release handoff: a
+                            // new finger is a new gesture (chained quick-switch).
+                            sEndSet = false;
+                            sEndTime = 0L;
+                            sRelDesValid = false;
+                            sEndRecents = false;
+                            sEndTask = false;
+                            sTaskOffValid = false;
+                            // DOWN arrives BEFORE the consumer updates
+                            // mDownPos/mLastPos: reading them now yields the
+                            // PREVIOUS gesture's positions, and the still-
+                            // rendering settle frames would warp the window
+                            // back to the old gesture's rect (chained quick-
+                            // switch "move back then flash"). Block our warp
+                            // until the first MOVE carries fresh positions.
+                            sDownSeen = false;
+                            return;
                         } else if (action == MotionEvent.ACTION_UP
                                 || action == MotionEvent.ACTION_CANCEL) {
                             sFingerDown = false;
@@ -477,17 +502,62 @@ public final class WindowFollowScale {
                                 return;
                             }
                             View rv = (View) param.thisObject;
-                            float sx = rv.getScaleX();
-                            float sy = rv.getScaleY();
-                            if (!(sx > 0.05f) || !(sx < 20f)) {
-                                sx = 1f;
-                            }
-                            if (!(sy > 0.05f) || !(sy < 20f)) {
-                                sy = 1f;
+                            // v9: while we own the layout (fresh), CANCEL the
+                            // RecentsView's own animated view transform
+                            // (stock's two-stage shrink/move-up of the card
+                            // list) so the neighbours land purely on our
+                            // 0.2-anchored mapping T(p) = C_d + s*(p - C_t),
+                            // same single-stage trajectory as the main card.
+                            Matrix ivm = null;
+                            if (fresh) {
+                                Matrix vm = rv.getMatrix();
+                                if (!vm.isIdentity()) {
+                                    ivm = new Matrix();
+                                    if (!vm.invert(ivm)) {
+                                        ivm = null;
+                                    } else {
+                                        dbgWfs("CAR v=" + vm.toShortString());
+                                    }
+                                }
+                                // probe: where does the stock two-stage
+                                // shrink/move-up of the card list actually
+                                // live? Dump RecentsView own view props plus
+                                // the first three child card props every 8th
+                                // fresh frame.
+                                sCarProbeN++;
+                                if (dbgOn() && (sCarProbeN & 7) == 0) {
+                                    StringBuilder sb = new StringBuilder("CARp rv[");
+                                    sb.append("sx=").append(rv.getScaleX())
+                                            .append(" sy=").append(rv.getScaleY())
+                                            .append(" tx=").append(rv.getTranslationX())
+                                            .append(" ty=").append(rv.getTranslationY());
+                                    if (rv instanceof ViewGroup) {
+                                        ViewGroup vg = (ViewGroup) rv;
+                                        int n = vg.getChildCount();
+                                        sb.append("] vm=")
+                                                .append(vm.isIdentity() ? "I" : vm.toShortString())
+                                                .append(" kids=").append(n);
+                                        for (int i = 0; i < n && i < 3; i++) {
+                                            View c = vg.getChildAt(i);
+                                            sb.append(" c").append(i).append('[')
+                                                    .append("tx=").append((int) c.getTranslationX())
+                                                    .append(" ty=").append((int) c.getTranslationY())
+                                                    .append(" sx=").append(c.getScaleX())
+                                                    .append(" sy=").append(c.getScaleY())
+                                                    .append(']');
+                                        }
+                                    } else {
+                                        sb.append("] vm=")
+                                                .append(vm.isIdentity() ? "I" : vm.toShortString());
+                                    }
+                                    dbgWfs(sb.toString());
+                                }
                             }
                             if (fresh) {
-                                sCarCurX = tx / sx;
-                                sCarCurY = ty / sy;
+                                // V is cancelled above: our ops map drawing
+                                // space directly - no viewScale compensation.
+                                sCarCurX = tx;
+                                sCarCurY = ty;
                                 sCarCurS = ts;
                             } else {
                                 long dt = now - sCarDrawT;
@@ -515,13 +585,15 @@ public final class WindowFollowScale {
                             }
                             Canvas canvas = (Canvas) param.args[0];
                             canvas.save();
+                            if (ivm != null) {
+                                canvas.concat(ivm);
+                            }
                             canvas.translate(sCarCurX, sCarCurY);
                             if (sCarCurS != 1f) {
-                                // scale about the stock card centre (panel
-                                // pivot / viewScale -> local), AFTER the
-                                // translate: T(p) = C_d + s*(p - C_t).
-                                canvas.scale(sCarCurS, sCarCurS,
-                                        pivX / sx, pivY / sy);
+                                // scale about the stock card centre (drawing
+                                // space - V cancelled, no viewScale divide):
+                                // T(p) = C_d + s*(p - C_t).
+                                canvas.scale(sCarCurS, sCarCurS, pivX, pivY);
                             }
                             saved = true;
                         } catch (Throwable t) {
@@ -793,45 +865,41 @@ public final class WindowFollowScale {
                         sAncValid = true;
                         sAncTime = now;
                         sAncGrab = rtTakeover;
-                        if (sAncGrab) {
-                            sAncDx = curS.centerX() - r.centerX();
-                            sAncDy = curS.centerY() - r.centerY();
-                            sAncDsig = (curS.height() - r.height()) / (float) h;
-                            sAncDsigW = (curS.width() - r.width()) / (float) w;
-                            dbgWfs("ANC grab dx=" + ((int) sAncDx)
-                                    + " dy=" + ((int) sAncDy)
-                                    + " dsig=" + sAncDsig
-                                    + " dsigW=" + sAncDsigW);
-                        } else {
-                            sAncL = curS.left - r.left;
-                            sAncT = curS.top - r.top;
-                            sAncR = curS.right - r.right;
-                            sAncB = curS.bottom - r.bottom;
-                            if (Math.abs(sAncL) < 1f && Math.abs(sAncT) < 1f
-                                    && Math.abs(sAncR) < 1f && Math.abs(sAncB) < 1f) {
-                                sAncL = 0f;
-                                sAncT = 0f;
-                                sAncR = 0f;
-                                sAncB = 0f;
-                            }
-                            dbgWfs("ANC off=" + ((int) sAncL) + "," + ((int) sAncT)
-                                    + "," + ((int) sAncR) + "," + ((int) sAncB));
-                        }
+                        // Quick-switch recognition (v8): a fresh swipe-up
+                        // starts with the window horizontally centered on
+                        // our reference; touching the swipe-up area mid
+                        // horizontal-switch (chained quick-switch) starts
+                        // with the card offset in X (carousel slot / settle
+                        // in flight). Stock keeps that X offset while the
+                        // finger drives Y/scale - so must we: the captured
+                        // CENTER-X offset persists for the whole gesture,
+                        // only Y/scale blend toward the trajectory.
+                        sAncKeepX = Math.abs(curS.centerX() - r.centerX())
+                                > (float) w * 0.08f;
+                        sAncKeepXH = r.height() > 1f ? r.height() : 1f;
+                        // v9: unified grab-style capture for BOTH paths -
+                        // the non-grab anchor uses the same sigma/center
+                        // decomposition (single-stage convergence into the
+                        // 0.2-anchored reference curve), replacing the old
+                        // two-stage edge-offset blend (offset glide, then
+                        // reference following).
+                        sAncDx = curS.centerX() - r.centerX();
+                        sAncDy = curS.centerY() - r.centerY();
+                        sAncDsig = (curS.height() - r.height()) / (float) h;
+                        sAncDsigW = (curS.width() - r.width()) / (float) w;
+                        dbgWfs("ANC dx=" + ((int) sAncDx)
+                                + " dy=" + ((int) sAncDy)
+                                + " dsig=" + sAncDsig
+                                + " dsigW=" + sAncDsigW
+                                + " keepX=" + sAncKeepX
+                                + " grab=" + sAncGrab);
                     }
-                    float k = 1f;
-                    float bt = (float) (now - sAncTime) / (float) ANCHOR_BLEND_MS;
-                    if (bt >= 1f) {
-                        k = 0f;
-                    } else if (bt > 0f) {
-                        k = 1f - bt * bt * (3f - 2f * bt);
-                    }
-                    if (sAncGrab) {
-                        // grabbed offsets decay exponentially (tau=GRAB_TAU_MS,
-                        // full convergence ~3*tau = 200ms). Width sigma decays
-                        // too so the ASPECT RATIO (not just overall scale)
-                        // eases from the grabbed rect to the reference ratio
-                        // instead of snapping on the first takeover frame.
-                        // Both sigmas clamp to the reference floor/cap.
+                    // v9: unified grab-style apply - offsets decay
+                    // exponentially (tau = GRAB_TAU_MS) into the 0.2-anchored
+                    // reference trajectory; both sigmas clamp to the
+                    // reference floor/cap; keepX persists the X center offset
+                    // scaled by the reference height ratio.
+                    {
                         float kg = (float) Math.exp(
                                 -(double) (now - sAncTime) / (double) GRAB_TAU_MS);
                         float sig = r.height() / (float) h + sAncDsig * kg;
@@ -840,16 +908,11 @@ public final class WindowFollowScale {
                         sigW = Math.max(FLOOR, Math.min(CAP, sigW));
                         float halfW = sigW * w / 2f;
                         float halfH = sig * h / 2f;
-                        float cx = r.centerX() + sAncDx * kg;
+                        float cx = r.centerX() + sAncDx
+                                * (sAncKeepX ? r.height() / sAncKeepXH : kg);
                         float cy = r.centerY() + sAncDy * kg;
                         desS = new RectF(cx - halfW, cy - halfH,
                                 cx + halfW, cy + halfH);
-                    } else {
-                        desS = new RectF(
-                                r.left + sAncL * k,
-                                r.top + sAncT * k,
-                                r.right + sAncR * k,
-                                r.bottom + sAncB * k);
                     }
                     // visual twin: what the matrix surgery, the injected
                     // from-rect (sLastDes) and the visual velocity see
@@ -1058,6 +1121,7 @@ public final class WindowFollowScale {
         sAncDy = 0f;
         sAncDsig = 0f;
         sAncDsigW = 0f;
+        sAncKeepX = false;
         sVelT = 0L;
         sVelT0 = 0L;
         sVelX = 0f;
@@ -1082,6 +1146,7 @@ public final class WindowFollowScale {
         sAncDy = 0f;
         sAncDsig = 0f;
         sAncDsigW = 0f;
+        sAncKeepX = false;
     }
 
     /** Carousel target update (screen space). */
@@ -1561,6 +1626,10 @@ public final class WindowFollowScale {
         }
         sLastWfsDbg = SystemClock.uptimeMillis();
         Log.d("HnWFS", info);
+    }
+
+    private static boolean dbgOn() {
+        return Port.on(Port.KEY_WIN_DEBUG);
     }
 
     private static void dbgBrk(String info) {

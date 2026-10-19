@@ -74,7 +74,7 @@ adb shell "chmod 755 /data/local/tmp/e"
 for %%F in (chain_hook.sh kernelsu.ko ksud magiskpolicy ksu_rules load_ko kmsg_dumper fne_syms.txt) do (
     adb push "root/ksu-late-load/%%F" /data/local/tmp/ksu_fne/ || goto :push_fail
 )
-adb shell "chmod 755 /data/local/tmp/ksu_fne/chain_hook.sh /data/local/tmp/ksu_fne/load_ko /data/local/tmp/ksu_fne/kmsg_dumper"
+adb shell "chmod 755 /data/local/tmp/ksu_fne/chain_hook.sh /data/local/tmp/ksu_fne/magiskpolicy /data/local/tmp/ksu_fne/ksud /data/local/tmp/ksu_fne/load_ko /data/local/tmp/ksu_fne/kmsg_dumper"
 echo       部署完成。
 echo.
 
@@ -120,6 +120,8 @@ echo       --- 自动安装 KSU / LSP 管理器 ---
 "%BASH%" "root/host-scripts/install_managers.sh"
 call :install_launcher_mods
 goto :done_root
+
+:done_root
 echo.
 pause
 exit /b 0

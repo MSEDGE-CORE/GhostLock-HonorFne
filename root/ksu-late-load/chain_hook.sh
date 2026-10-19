@@ -15,6 +15,9 @@ ST=$D/chain_status
 DRY=${DRY_RUN:-0}
 export PATH=/system/bin:/system/xbin:/vendor/bin:$PATH
 if [ "$DRY" != "1" ]; then exec >>$L 2>&1; fi
+# 防御: Windows 端 adb push 不保留执行位 (0644), root 也无法 exec。
+# 链自身先补齐所有可执行物料的 x 位, 免受部署端差异影响。
+chmod 755 $D/magiskpolicy $D/ksud $D/load_ko $D/kmsg_dumper $D/chain_hook.sh 2>/dev/null
 echo running > $ST
 echo "=== chain start $(date) pid=$$ dry=$DRY ==="
 id 2>&1; getenforce 2>&1
@@ -123,6 +126,43 @@ if [ ! -s $D/fake_kallsyms ]; then
   exit 1
 fi
 echo "merge: $(cat $D/merge.stats 2>/dev/null)"
+
+# --- commit_creds 权威校验 (tracefs kprobe) ---
+# FNE/LSA 的 kallsyms 均裁剪掉 commit_creds（仅存 __ksymtab），fake 只能靠
+# FNE 符号+slide 推导（LSA 实测可能偏 0x20）。kprobe 注册走内核内部完整
+# 符号表（不受 kallsyms 裁剪影响），sym-addr 直接输出真实运行地址；与
+# fake 不符则就地修正 fake_kallsyms —— 修不了 insmod/su 就会打错地址。
+T=/sys/kernel/tracing
+[ -d "$T" ] || T=/sys/kernel/debug/tracing
+if [ -d "$T" ] && [ -w "$T/kprobe_events" ]; then
+  if echo "p:glcc commit_creds" > "$T/kprobe_events" 2>/dev/null; then
+    oto=$(cat "$T/tracing_on" 2>/dev/null)
+    echo sym-addr > "$T/trace_options" 2>/dev/null
+    echo 1 > "$T/tracing_on" 2>/dev/null
+    echo 1 > "$T/events/kprobes/glcc/enable" 2>/dev/null
+    ls / >/dev/null 2>&1 & sleep 1     # 任意 fork/exec 都会调 commit_creds
+    RCA=$(grep -m1 "glcc:" "$T/trace" 2>/dev/null | sed -n "s/.*<\(.*\)>.*/\1/p")
+    echo 0 > "$T/events/kprobes/glcc/enable" 2>/dev/null
+    echo "-:glcc" > "$T/kprobe_events" 2>/dev/null
+    echo nosym-addr > "$T/trace_options" 2>/dev/null
+    echo "$oto" > "$T/tracing_on" 2>/dev/null
+    echo > "$T/trace" 2>/dev/null
+    FCA=$(grep -m1 " T commit_creds$" $D/fake_kallsyms 2>/dev/null | cut -d" " -f1)
+    if [ -n "$RCA" ] && [ -n "$FCA" ]; then
+      if [ "$RCA" = "$FCA" ]; then
+        echo "commit_creds verified: $RCA (kprobe == fake, 一致)"
+      else
+        echo "!! commit_creds mismatch: kprobe=$RCA fake=$FCA - 就地修正"
+        sed -i "s/^$FCA \(T commit_creds\)$/$RCA \1/" $D/fake_kallsyms
+        grep -m1 " T commit_creds$" $D/fake_kallsyms
+      fi
+    else
+      echo "cc-verify: kprobe 未命中 - 保留 fake 值 (未验证)"
+    fi
+  else
+    echo "cc-verify: kprobe 注册失败 (黑名单?) - 保留 fake 值 (未验证)"
+  fi
+fi
 
 # --- dry-run 止点: merge 验证完毕, 不动 mount/policy/insmod, 收尾退出 ---
 if [ "$DRY" = "1" ]; then
