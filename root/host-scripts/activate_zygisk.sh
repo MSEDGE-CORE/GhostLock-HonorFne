@@ -8,12 +8,19 @@
 #   2. 合并 modules_update -> modules: 链上 ksud 阶段不合并 modules_update
 #      (FNE 实测跨整个 boot 不合并), 挂载副本停留裸解压状态(bin/ 无
 #      zygiskd, service.sh 报 "No such file or directory" 不注入)。
-#   3. 杀旧 daemon, 清失败标记(.injecting/.abort_msg + daemon 反崩溃自禁
-#      写入的 disable 标记 + module.prop 29B 失败标记, 后者从 module.prop.orig
-#      还原), 重跑 zygisksu service.sh。严禁移动/删除 /data/adb/zygisksu
-#      状态目录: daemon 启动时 verify1 校验完整状态现场(bugreports/等,
-#      仅首次成功安装生成), 状态目录被清后必报 "Module files corrupted"
-#      并写 disable 自禁(FNE 23:38/23:42 实测, 恢复现场后 23:47 一次成功)。
+#   3. 杀旧 daemon, 清失败标记(.injecting/.abort_msg/disable/update) +
+#      无条件还原 module.prop。daemon 失败时把状态写进 module.prop, 实测
+#      两种格式: a) 29B 裸标记 "[❌ Last injection failed!]"(替换整个文件);
+#      b) 完整 prop 但 description="[❌ Module files corrupted]"(00:18 实测)。
+#      而 verify1 = 模块文件哈希自检(module.prop 对 module.prop.sha256,
+#      FNE 00:30 实测 42 文件全对账仅 module.prop 不匹配), module.prop 一旦
+#      被改写, 后续每次 daemon 启动必挂 "Module files corrupted" 死亡螺旋,
+#      且 module.prop.orig 也可能被连带改坏 —— 因此必须用嵌入的 zip 原文
+#      (211B, sha256 前 16 位 2f8cdf9a676ed7b8)同时还原两个文件, 不能只认
+#      head -c1="[" 的旧格式。严禁移动/删除 /data/adb/zygisksu 状态目录:
+#      daemon 启动时校验完整状态现场(bugreports/ 等), 状态目录被清后必报
+#      "Module files corrupted" 并写 disable 自禁(FNE 23:38/23:42 实测,
+#      恢复现场后 23:47 一次成功)。
 #   4. 90s 未注入只输出诊断, 不再 kill zygote: FNE 实测 [5/5] 兜底 kill
 #      两次诱发整机硬重启(22:45/23:24), 已移除。
 # 前置: KSU 已就绪(su 0 可用); zygisksu/zygisk_lsposed 模块已挂载。
@@ -71,8 +78,16 @@ echo "      [2/4] 注入 permissive 域 + 模块 sepolicy 规则..."
 $T30 adb shell "su 0 $MP --live 'permissive kernel' 'permissive zygote' 'permissive system_server'" >/dev/null 2>&1
 $T30 adb shell "su 0 sh -c 'for r in /data/adb/modules/*/sepolicy.rule; do [ -f \"\$r\" ] && $MP --apply \"\$r\" 2>/dev/null; done'" >/dev/null 2>&1
 
-echo "      [3/4] 清失败标记并重启注入链..."
-$T30 adb shell "su 0 sh -c 'pkill -9 -f zn-daemon 2>/dev/null; pkill -9 -f zn-zygisk 2>/dev/null; pkill -9 lspd 2>/dev/null; sleep 1; rm -f /data/adb/zygisksu/.abort_msg /data/adb/zygisksu/.injecting $MOD/disable 2>/dev/null; [ \"\$(head -c 1 $MOD/module.prop 2>/dev/null)\" = \"[\" ] && cp $MOD/module.prop.orig $MOD/module.prop 2>/dev/null; sh $MOD/service.sh'" >/dev/null 2>&1
+echo "      [3/4] 还原 module.prop + 清失败标记并重启注入链..."
+# zip 内 pristine module.prop (211B, sha256=2f8cdf9a...) 的 base64。
+# daemon 两种失败改写格式(29B 裸标记 / description 嵌入)都会破坏
+# verify1 哈希自检, module.prop.orig 也可能被连带改坏, 故无条件双还原。
+PRISTINE_B64='aWQ9enlnaXNrc3UKbmFtZT1aeWdpc2sgTmV4dAp2ZXJzaW9uPTEuNS4yICg4NjQtYTRhNzJjZS1yZWxlYXNlKQp2ZXJzaW9uQ29kZT04NjQKYXV0aG9yPUxTUG9zZWQgRGV2ZWxvcGVycwpkZXNjcmlwdGlvbj1TdGFuZGFsb25lIGltcGxlbWVudGF0aW9uIG9mIFp5Z2lzay4KdXBkYXRlSnNvbj1odHRwczovL2xzcG9zZWQuemlwL3p5Z2lzay1uZXh0L3VwZGF0ZS5qc29uCg=='
+$T30 adb shell "su 0 sh -c 'pkill -9 -f zn-daemon 2>/dev/null; pkill -9 -f zn-zygisk 2>/dev/null; pkill -9 lspd 2>/dev/null; sleep 1; echo $PRISTINE_B64 | base64 -d > $MOD/module.prop.orig; cp $MOD/module.prop.orig $MOD/module.prop; rm -f /data/adb/zygisksu/.abort_msg /data/adb/zygisksu/.injecting $MOD/disable $MOD/update; sh $MOD/service.sh'" >/dev/null 2>&1
+h=$($T15 adb shell "su 0 sha256sum $MOD/module.prop" 2>/dev/null | tr -d '\r' | cut -c1-16)
+if [ "$h" != "2f8cdf9a676ed7b8" ]; then
+    echo "      [警告] module.prop 还原后哈希异常($h), verify1 大概率失败"
+fi
 
 echo "      [4/4] 等待注入落位(最长 90s)..."
 ok=0
@@ -92,8 +107,8 @@ if [ $ok -eq 1 ]; then
     exit 0
 else
     echo "      [警告] 注入未确认。诊断信息:"
-    echo "        --- module.prop 状态标记(若为 [❌...] 说明 daemon 上次失败) ---"
-    $T15 adb shell "su 0 cat $MOD/module.prop" 2>/dev/null | tr -d '\r' | head -2 | sed 's/^/          /'
+    echo "        --- module.prop(若 description=[❌...] 或为 29B 裸标记说明 daemon 失败) ---"
+    $T15 adb shell "su 0 sh -c 'head -c1 $MOD/module.prop | grep -q \"\\[\" && cat $MOD/module.prop || grep -E \"^(description|version)=\" $MOD/module.prop'" 2>/dev/null | tr -d '\r' | head -3 | sed 's/^/          /'
     echo "        --- daemon 内核日志(末 15 行, 缓冲可能已被冲掉) ---"
     $T30 adb shell "su 0 sh -c 'dmesg 2>/dev/null'" 2>/dev/null | grep -a "zn-daemon" | tail -15 | LC_ALL=C sed 's/^/          /'
     echo "        --- daemon_out.log ---"
