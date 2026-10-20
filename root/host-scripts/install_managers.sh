@@ -41,6 +41,16 @@ if ! $T30 adb shell "su 0 id" 2>/dev/null | grep -q "uid=0"; then
     exit 1
 fi
 
+# ksud 路径解析: /data/adb/ksud 只在管理器首次打开时由 APK 拷入, 全自动
+# 流程管理器从未启动过就不存在(LSA "模块安装失败" 首要嫌疑) —— 兜底用
+# chain 部署目录里的同一份 ksud。
+KSUD=$($T30 adb shell "su 0 sh -c 'for k in /data/adb/ksud /data/local/tmp/ksu_fne/ksud /data/local/tmp/*/ksud; do [ -x \"\$k\" ] && echo \"\$k\" && break; done'" 2>/dev/null | tr -d '\r' | head -1)
+if [ -z "$KSUD" ]; then
+    echo "      [警告] 设备上未找到 ksud(管理器未运行过且部署目录缺失), 模块安装跳过"
+    exit 1
+fi
+echo "      使用 ksud: $KSUD"
+
 install_mod() { # $1=zip
     local zip=$1 zid stage out rc
     zid=$(basename "$zip" .zip)
@@ -49,7 +59,7 @@ install_mod() { # $1=zip
         echo "      [警告] $zid 中转推送失败"
         return 1
     fi
-    out=$($T180 adb shell "su 0 /data/adb/ksud module install $stage" 2>&1 | tr -d '\r')
+    out=$($T180 adb shell "su 0 $KSUD module install $stage" 2>&1 | tr -d '\r')
     rc=$?
     # adb shell 不一定可靠回传设备退出码, 以 "successfully" 文本双保险
     if [ $rc -ne 0 ] || ! echo "$out" | grep -q successfully; then
