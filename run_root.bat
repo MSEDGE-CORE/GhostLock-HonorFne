@@ -9,6 +9,30 @@ echo    目标设备: 荣耀70 FNE-AN00（Bootloader 锁定）
 echo ==================================================
 echo.
 
+rem ---------- 模式选择：部署 / 撤销 ----------
+echo 请选择运行模式:
+echo   [1] 部署 / 一键临时 root（默认）
+echo   [2] 撤销部署（清理设备端传输文件与模块中转；不卸载管理器/app）
+set "MODE=1"
+set /p "MODE=输入 1 或 2 后回车: "
+if "%MODE%"=="2" goto :undo
+goto :deploy
+
+:undo
+where adb >nul 2>nul || goto :no_adb
+set "BASH="
+if exist "C:\Program Files\Git\bin\bash.exe" set "BASH=C:\Program Files\Git\bin\bash.exe"
+if not defined BASH if exist "C:\Program Files (x86)\Git\bin\bash.exe" set "BASH=C:\Program Files (x86)\Git\bin\bash.exe"
+if not defined BASH (
+    where bash >nul 2>nul && set "BASH=bash"
+)
+if not defined BASH goto :no_bash
+"%BASH%" "root/host-scripts/uninstall.sh"
+echo.
+pause
+exit /b 0
+
+:deploy
 rem ---------- 1/5 依赖检查 ----------
 echo [1/5] 检查依赖...
 where adb >nul 2>nul

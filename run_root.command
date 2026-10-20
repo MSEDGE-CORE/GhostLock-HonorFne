@@ -9,6 +9,34 @@ echo "   目标设备: 荣耀70 FNE-AN00（Bootloader 锁定）"
 echo "=================================================="
 echo
 
+# ---------- 模式选择：部署 / 撤销 ----------
+echo "请选择运行模式:"
+echo "  [1] 部署 / 一键临时 root（默认）"
+echo "  [2] 撤销部署（清理设备端传输文件与模块中转；不卸载管理器/app）"
+MODE=1
+read -p "输入 1 或 2 后回车: " MODE
+case "$MODE" in
+    2)
+        ADB="$(command -v adb 2>/dev/null || true)"
+        if [ -z "$ADB" ]; then
+            for p in "$HOME/Library/Android/sdk/platform-tools/adb" /usr/local/bin/adb /opt/homebrew/bin/adb; do
+                if [ -x "$p" ]; then ADB="$p"; break; fi
+            done
+        fi
+        if [ -z "$ADB" ]; then
+            echo "[错误] 未找到 adb。"
+            read -p "按回车键退出..."
+            exit 1
+        fi
+        export PATH="$(dirname "$ADB"):$PATH"
+        bash "root/host-scripts/uninstall.sh"
+        echo
+        read -p "按回车键退出..."
+        exit 0
+        ;;
+esac
+echo
+
 exit_push() {
     echo "[错误] 文件推送失败。请检查连接与 USB 调试授权后重试。"
     read -p "按回车键退出..."
