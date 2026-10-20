@@ -228,19 +228,9 @@ echo "=== KernelSU module loaded ==="
 grep kernelsu /proc/modules
 
 # --- userspace bring-up: real ksud stages ---
-# ZygiskNext/LSPosed 运行时规则(必须在 ksud stages 前注入): zn-daemon 跑在
-# kernel:s0 并 ptrace 注入 zygote, 末尾的 enforce 翻转后这些操作会被真拒
-# (getenforce 在 grind 期间显示 Permissive 是内核伪装, AVC 实为 permissive=0)。
-# 实测配方(FNE): permissive kernel/zygote/system_server + 模块自带
-# sepolicy.rule, 缺一则 "System server injection fails" 死循环。
-$D/magiskpolicy --live "permissive kernel" "permissive zygote" "permissive system_server" 2>&1
-echo "permissive domains exit=$?"
-for r in /data/adb/modules/*/sepolicy.rule; do
-  [ -f "$r" ] || continue
-  $D/magiskpolicy --apply "$r" 2>&1 | grep -v "does not exist"
-  echo "applied $r exit=$?"
-done
-
+# NOTE: Zygisk 的 permissive/sepolicy 规则不在这里注入! 链内(模块刚 init 完)
+# 跑 magiskpolicy --live 会破坏模块(16:47 FNE 实测: 链后 su 消失/模块丢失)。
+# 正确时机是链完成稳定后, 由 host 侧 activate_zygisk.sh 执行(12:40 配方已验证)。
 $D/ksud post-fs-data > $D/stage_postfs.log 2>&1; echo "post-fs-data exit=$?"
 $D/ksud services > $D/stage_services.log 2>&1; echo "services exit=$?"
 $D/ksud boot-completed > $D/stage_boot.log 2>&1; echo "boot-completed exit=$?"

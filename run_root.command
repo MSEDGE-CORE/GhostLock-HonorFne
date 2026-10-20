@@ -146,6 +146,8 @@ if [ "$KSU_UP" = "1" ]; then
     # 自动安装管理器: KernelSU 管理器 + ZygiskNext + LSPosed(内嵌管理器)
     echo "      --- 自动安装 KSU / LSP 管理器 ---"
     bash "root/host-scripts/install_managers.sh"
+    # Zygisk/LSPosed 注入激活（链后时机，12:40 已验证配方；链内跑会破坏模块）
+    bash "root/host-scripts/activate_zygisk.sh"
     install_launcher_mods
 else
     echo "=================================================="

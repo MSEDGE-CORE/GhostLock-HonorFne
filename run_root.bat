@@ -118,6 +118,8 @@ echo    [成功] KernelSU 已加载，临时 root 就绪！
 echo ==================================================
 echo       --- 自动安装 KSU / LSP 管理器 ---
 "%BASH%" "root/host-scripts/install_managers.sh"
+rem Zygisk/LSPosed 注入激活（链后时机，12:40 已验证配方；链内跑会破坏模块）
+"%BASH%" "root/host-scripts/activate_zygisk.sh"
 call :install_launcher_mods
 goto :done_root
 

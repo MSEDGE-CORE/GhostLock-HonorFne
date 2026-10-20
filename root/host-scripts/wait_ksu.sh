@@ -37,7 +37,9 @@ while [ $i -lt 36 ]; do
     if [ -f "$TMP/chain.log" ]; then
         total=$(wc -l < "$TMP/chain.log")
         if [ "$total" -gt "$LAST_LINES" ]; then
-            tail -n $((total - LAST_LINES)) "$TMP/chain.log" | sed 's/^/  [chain] /'
+            # chain.log 含内核二进制转储: macOS sed 遇非法字节会断言崩溃,
+            # 必须 LC_ALL=C 按字节处理
+            tail -n $((total - LAST_LINES)) "$TMP/chain.log" | LC_ALL=C sed 's/^/  [chain] /'
             LAST_LINES=$total
         fi
     fi
@@ -51,7 +53,7 @@ poll && exit 0
 
 echo "  --------------------------------------------"
 echo "  [超时] KSU 未加载。chain.log 末尾 30 行:"
-$T30 adb shell "tail -n 30 $D/chain.log 2>/dev/null" 2>/dev/null | tr -d '\r' | sed 's/^/  [chain] /'
+$T30 adb shell "tail -n 30 $D/chain.log 2>/dev/null" 2>/dev/null | tr -d '\r' | LC_ALL=C sed 's/^/  [chain] /'
 kcap=$($T30 adb shell "tail -n 15 $D/kmsg_cap.txt 2>/dev/null" 2>/dev/null | tr -d '\r')
 if [ -n "$kcap" ]; then
     echo "  [内核] kmsg_cap.txt 末尾 15 行:"
