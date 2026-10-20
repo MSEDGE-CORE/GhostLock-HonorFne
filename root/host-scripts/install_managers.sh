@@ -46,9 +46,12 @@ install_mod() { # $1=zip
         $T30 adb shell "rm -f $stage" >/dev/null 2>&1
         return 1
     fi
+    # toybox unzip 不恢复 zip 权限位, 二进制/脚本缺执行位会
+    # "zygiskd: inaccessible or not found"(LSA 实测), chmod -R 755 补齐
+    $T30 adb shell "su 0 chmod -R 755 $MODDIR/$id" >/dev/null 2>&1
     # 清 update/disable/remove 标记: 无条件覆盖策略, 保证 deploy/ 版本始终生效
     $T30 adb shell "su 0 sh -c 'rm -f $MODDIR/$id/update $MODDIR/$id/disable $MODDIR/$id/remove; rm -f $stage'" >/dev/null 2>&1
-    echo "      模块 $id 已同步"
+    echo "      模块 $id 已同步（含执行位修复）"
 }
 
 echo "      同步 KSU 模块（ZygiskNext / LSPosed）..."
