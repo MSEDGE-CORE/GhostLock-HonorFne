@@ -46,11 +46,18 @@ GhostLock-HonorFne/
   - **连接方式：仅 USB**（WiFi/网络 adb 已移除）。
 - KSU 成功后自动安装的管理器物料（在本仓库 `deploy/`，脚本自动装，无需手动）：
   - `deploy/KernelSU-manager.apk`——KSU 管理器（已装则跳过）。
-  - `deploy/LSPosed-zygisk.zip` + `deploy/ZygiskNext.zip`——zip 整包推 `/data/local/tmp`
-    中转、设备端 root 解压入 `/data/adb/modules`（adb 为 shell 用户直接 push `/data/adb`
-    必然 Permission denied；单次 push 亦远快于逐文件），无条件覆盖同步并清
-    `update`/`disable`/`remove` 标记；LSPosed 管理器内嵌于模块，
+  - `deploy/LSPosed-zygisk.zip` + `deploy/ZygiskNext.zip`——走 `ksud module install`
+    官方安装（执行 customize.sh：二进制补丁/权限/校验），装入 `modules_update`，
+    下轮 grind 的 ksud 启动时自动挂载生效。**绝不裸 unzip 解压**：缺安装期处理，
+    且 zygiskd 会把状态回写 `module.prop`，与哈希校验形成 "Module files
+    corrupted" 死循环（FNE/LSA 实测）；LSPosed 管理器内嵌于模块，
     激活后经通知栏快捷方式进入。
+- **Zygisk 注入的 SELinux 配方**（已固化进 chain_hook.sh，ksud stages 前注入）：
+  `magiskpolicy --live "permissive kernel" "permissive zygote"
+  "permissive system_server"` + 逐个 `--apply /data/adb/modules/*/sepolicy.rule`。
+  缺此步则 zn-daemon(kernel:s0) ptrace 注入在末尾 enforce 翻转后被拒，
+  LSPosed 死循环 "System server injection fails"（chain 末尾的 enforce 翻转
+  后，AVC 实为 permissive=0；grind 期间 getenforce 显示 Permissive 是内核伪装）。
 
 ### per-boot root
 
