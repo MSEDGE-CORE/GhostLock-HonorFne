@@ -327,12 +327,12 @@ private fun SettingsScreen() {
                     }
                     SettingsSection("导航键") {
                         SettingsSwitchItem(ToggleRow(
-                            "禁用手势提示条跟随", "禁用底部手势提示条跟手移动",
-                            Port.KEY_NAV_HANDLE_NO_FOLLOW
-                        ), true)
-                        SettingsSwitchItem(ToggleRow(
                             "隐藏手势提示条", "隐藏手势提示条，保留底部抬升",
                             Port.KEY_NAV_HANDLE_HIDE
+                        ), true)
+                        SettingsSwitchItem(ToggleRow(
+                            "禁用手势提示条跟随", "禁用底部手势提示条跟手移动",
+                            Port.KEY_NAV_HANDLE_NO_FOLLOW
                         ), true)
                     }
                     SettingsSection("杂项") {
