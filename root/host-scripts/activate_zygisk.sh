@@ -25,10 +25,15 @@ injected() {
 }
 
 echo "      激活 Zygisk/LSPosed 注入..."
-if ! have_root; then
-    echo "      [警告] su 不可用, 跳过 Zygisk 激活"
-    exit 1
-fi
+# su 可能晚于模块就绪(ksud 阶段注入 allowlist): 轮询等待, 最长 60s
+n=0
+while ! have_root; do
+    if [ $n -ge 12 ]; then
+        echo "      [警告] su 不可用, 跳过 Zygisk 激活"
+        exit 1
+    fi
+    sleep 5; n=$((n + 1))
+done
 if ! $T15 adb shell "su 0 test -f $MOD/service.sh" 2>/dev/null; then
     echo "      [提示] zygisksu 模块未挂载(可能未安装), 跳过"
     exit 0

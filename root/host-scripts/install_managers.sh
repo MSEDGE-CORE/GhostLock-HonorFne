@@ -35,11 +35,18 @@ while [ "$bc" != "1" ] && [ $n -lt 36 ]; do
     sleep 5; n=$((n+1))
     bc=$($T30 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
 done
-if ! $T30 adb shell "su 0 id" 2>/dev/null | grep -q "uid=0"; then
-    echo "      [警告] root 不可用(设备重启后 KSU 已丢), 模块安装跳过"
-    echo "      提示: 重新运行一键脚本 grind 即可恢复"
-    exit 1
-fi
+# root 复检改为轮询: 模块可能已加载而 su(allowlist 注入)尚未就绪,
+# 单次检查会误判 root 丢失 —— 最长等 120s
+n=0
+while ! $T30 adb shell "su 0 id" 2>/dev/null | grep -q "uid=0"; do
+    if [ $n -ge 24 ]; then
+        echo "      [警告] root 不可用(su 未就绪/设备重启后 KSU 已丢), 模块安装跳过"
+        echo "      提示: 重新运行一键脚本 grind 即可恢复"
+        exit 1
+    fi
+    echo "      等待 su 就绪 ($((n * 5 + 5))s)..."
+    sleep 5; n=$((n + 1))
+done
 
 # ksud 路径解析: /data/adb/ksud 只在管理器首次打开时由 APK 拷入, 全自动
 # 流程管理器从未启动过就不存在(LSA "模块安装失败" 首要嫌疑) —— 兜底用

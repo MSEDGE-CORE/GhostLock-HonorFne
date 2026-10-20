@@ -65,6 +65,11 @@ adb shell "grep -q kernelsu /proc/modules" >nul 2>nul
 if not errorlevel 1 (
     echo       KernelSU 已在运行，无需再次提权。
     call :ensure_module
+    rem 上次运行可能超时误判"未落地"(模块已加载但 su 未就绪): 补齐安装/激活,
+    rem 重跑即修复
+    echo       --- 补齐 KSU / LSP 管理器与 Zygisk 激活 ---
+    "%BASH%" "root/host-scripts/install_managers.sh"
+    "%BASH%" "root/host-scripts/activate_zygisk.sh"
     echo.
     pause
     exit /b 0

@@ -90,6 +90,11 @@ echo "[3/5] 检查 KernelSU 状态..."
 if "$ADB" shell "grep -q kernelsu /proc/modules" >/dev/null 2>&1; then
     echo "      KernelSU 已在运行，无需再次提权。"
     ensure_module
+    # 上次运行可能超时误判"未落地"(模块已加载但 su 未就绪): 补齐安装/激活,
+    # 重跑即修复
+    echo "      --- 补齐 KSU / LSP 管理器与 Zygisk 激活 ---"
+    bash "root/host-scripts/install_managers.sh"
+    bash "root/host-scripts/activate_zygisk.sh"
     echo
     read -p "按回车键退出..."
     exit 0
