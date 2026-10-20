@@ -5,12 +5,19 @@
 #   1. magiskpolicy 放行 permissive kernel/zygote/system_server + 应用模块
 #      sepolicy.rule —— zn-daemon(kernel:s0) ptrace 注入 zygote 在 enforce
 #      下会被真拒(getenforce 的 Permissive 是内核伪装, AVC permissive=0)。
-#   2. 杀掉旧 zn-daemon/lspd/companion, 重置 /data/adb/zygisksu 状态目录
-#      (清 stale .abort_msg, 防 "Module files corrupted" 死循环)。
-#   3. 重跑 zygisksu service.sh 拉起全新 daemon; lspd 自带 system_server
-#      重启逻辑, 注入随 zygote 重启落位。
-#   4. 兜底: 90s 未注入则 kill zygote 触发 init 重启, zn-daemon 注入新 zygote。
+#   2. 合并 modules_update -> modules: 链上 ksud 阶段不合并 modules_update
+#      (FNE 实测跨整个 boot 不合并), 挂载副本停留裸解压状态(bin/ 无
+#      zygiskd, service.sh 报 "No such file or directory" 不注入)。
+#   3. 杀旧 daemon, 清 stale 状态标记, 重跑 zygisksu service.sh 拉起全新
+#      daemon。注意: daemon 会把失败状态(29B 标记)直接写进模块的
+#      module.prop(原文存 module.prop.orig), 见标记即静默 exit(1)——
+#      所以 [1/4] 的 modules_update 合并(覆盖回干净 module.prop)是
+#      清除该标记的关键, 清 /data/adb/zygisksu 状态目录无效。
+#   4. 90s 未注入只输出诊断, 不再 kill zygote: FNE 实测 [5/5] 兜底 kill
+#      两次诱发整机硬重启(22:45/23:24), 已移除。
 # 前置: KSU 已就绪(su 0 可用); zygisksu/zygisk_lsposed 模块已挂载。
+# zygote pid 解析必须用 pidof: pgrep -x zygote64 不匹配(comm 为 main),
+# pgrep -f 会误匹配 shell 自身命令行(FNE 实测三者输出互不相同)。
 cd "$(dirname "$0")/../.." || exit 1
 T15=""; T30=""
 command -v timeout >/dev/null 2>&1 && { T15="timeout 15"; T30="timeout 30"; }
@@ -21,7 +28,7 @@ MP=$($T15 adb shell "su 0 sh -c 'for p in /data/local/tmp/ksu_fne/magiskpolicy /
 
 have_root() { $T15 adb shell "su 0 id" 2>/dev/null | grep -q "uid=0"; }
 injected() {
-    $T15 adb shell "su 0 sh -c 'for Z in \$(pgrep -x zygote64); do grep -q zygisk_lsposed /proc/\$Z/maps 2>/dev/null && exit 0; done; exit 1'" 2>/dev/null
+    $T15 adb shell "su 0 sh -c 'for Z in \$(pidof zygote64); do grep -q zygisk_lsposed /proc/\$Z/maps 2>/dev/null && exit 0; done; exit 1'" 2>/dev/null
 }
 
 echo "      激活 Zygisk/LSPosed 注入..."
@@ -52,14 +59,21 @@ while [ "$bc" != "1" ] && [ $n -lt 36 ]; do
     bc=$($T15 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
 done
 
-echo "      [1/4] 注入 permissive 域 + 模块 sepolicy 规则..."
+echo "      [1/4] 合并 modules_update 新装模块到挂载目录..."
+$T30 adb shell "su 0 sh -c 'for m in zygisksu zygisk_lsposed; do [ -d /data/adb/modules_update/\$m ] && cp -rf /data/adb/modules_update/\$m/. /data/adb/modules/\$m/ 2>/dev/null; done'" >/dev/null 2>&1
+if ! $T15 adb shell "su 0 test -e $MOD/bin/zygiskd" 2>/dev/null; then
+    echo "      [警告] $MOD/bin/zygiskd 仍缺失(模块包不完整), 激活中止"
+    exit 1
+fi
+
+echo "      [2/4] 注入 permissive 域 + 模块 sepolicy 规则..."
 $T30 adb shell "su 0 $MP --live 'permissive kernel' 'permissive zygote' 'permissive system_server'" >/dev/null 2>&1
 $T30 adb shell "su 0 sh -c 'for r in /data/adb/modules/*/sepolicy.rule; do [ -f \"\$r\" ] && $MP --apply \"\$r\" 2>/dev/null; done'" >/dev/null 2>&1
 
-echo "      [2/4] 重置 daemon 状态并重启注入链..."
-$T30 adb shell "su 0 sh -c 'pkill -9 -f zn-daemon 2>/dev/null; pkill -9 -f zn-zygisk 2>/dev/null; pkill -9 lspd 2>/dev/null; sleep 1; [ -d /data/adb/zygisksu ] && mv /data/adb/zygisksu /data/adb/zygisksu.bak.\$(date +%s) 2>/dev/null; sh $MOD/service.sh'" >/dev/null 2>&1
+echo "      [3/4] 重置 daemon 状态并重启注入链..."
+$T30 adb shell "su 0 sh -c 'pkill -9 -f zn-daemon 2>/dev/null; pkill -9 -f zn-zygisk 2>/dev/null; pkill -9 lspd 2>/dev/null; sleep 1; rm -f /data/adb/zygisksu/.abort_msg /data/adb/zygisksu/.injecting 2>/dev/null; sh $MOD/service.sh'" >/dev/null 2>&1
 
-echo "      [3/4] 等待注入落位(最长 90s)..."
+echo "      [4/4] 等待注入落位(最长 90s)..."
 ok=0
 for i in $(seq 1 18); do
     sleep 5
@@ -67,21 +81,18 @@ for i in $(seq 1 18); do
     echo "        ... 第 $((i*5))s, zygote 尚未注入"
 done
 
-if [ $ok -eq 0 ]; then
-    echo "      [4/4] 兜底: 重启 zygote 触发注入..."
-    $T30 adb shell "su 0 pkill -9 -x zygote64" >/dev/null 2>&1
-    for i in $(seq 1 12); do
-        sleep 5
-        if injected; then ok=1; break; fi
-    done
-fi
-
 if [ $ok -eq 1 ]; then
     echo "      Zygisk 注入成功: zygote 已加载 LSPosed zygisk 模块"
     echo "      (lspd 日志: /data/adb/lspd/log/ ; LSPosed 入口在通知栏)"
     exit 0
 else
-    echo "      [警告] 注入未确认, 可重跑本脚本; 日志:"
-    echo "        /data/adb/lspd/log/verbose_*.log / /data/adb/zygisksu*/daemon_out.log"
+    echo "      [警告] 注入未确认。诊断信息:"
+    echo "        --- module.prop 状态标记(若为 [❌...] 说明 daemon 上次失败) ---"
+    $T15 adb shell "su 0 cat $MOD/module.prop" 2>/dev/null | tr -d '\r' | head -2 | sed 's/^/          /'
+    echo "        --- daemon 内核日志(末 15 行, 缓冲可能已被冲掉) ---"
+    $T30 adb shell "su 0 sh -c 'dmesg 2>/dev/null'" 2>/dev/null | grep -a "zn-daemon" | tail -15 | LC_ALL=C sed 's/^/          /'
+    echo "        --- daemon_out.log ---"
+    $T15 adb shell "su 0 cat /data/adb/zygisksu/daemon_out.log 2>/dev/null" 2>/dev/null | tr -d '\r' | tail -5 | LC_ALL=C sed 's/^/          /'
+    echo "        可重跑本脚本; 手动日志: /data/adb/lspd/log/verbose_*.log"
     exit 1
 fi
