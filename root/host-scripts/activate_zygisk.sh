@@ -8,11 +8,12 @@
 #   2. 合并 modules_update -> modules: 链上 ksud 阶段不合并 modules_update
 #      (FNE 实测跨整个 boot 不合并), 挂载副本停留裸解压状态(bin/ 无
 #      zygiskd, service.sh 报 "No such file or directory" 不注入)。
-#   3. 杀旧 daemon, 清 stale 状态标记, 重跑 zygisksu service.sh 拉起全新
-#      daemon。注意: daemon 会把失败状态(29B 标记)直接写进模块的
-#      module.prop(原文存 module.prop.orig), 见标记即静默 exit(1)——
-#      所以 [1/4] 的 modules_update 合并(覆盖回干净 module.prop)是
-#      清除该标记的关键, 清 /data/adb/zygisksu 状态目录无效。
+#   3. 杀旧 daemon, 清失败标记(.injecting/.abort_msg + daemon 反崩溃自禁
+#      写入的 disable 标记 + module.prop 29B 失败标记, 后者从 module.prop.orig
+#      还原), 重跑 zygisksu service.sh。严禁移动/删除 /data/adb/zygisksu
+#      状态目录: daemon 启动时 verify1 校验完整状态现场(bugreports/等,
+#      仅首次成功安装生成), 状态目录被清后必报 "Module files corrupted"
+#      并写 disable 自禁(FNE 23:38/23:42 实测, 恢复现场后 23:47 一次成功)。
 #   4. 90s 未注入只输出诊断, 不再 kill zygote: FNE 实测 [5/5] 兜底 kill
 #      两次诱发整机硬重启(22:45/23:24), 已移除。
 # 前置: KSU 已就绪(su 0 可用); zygisksu/zygisk_lsposed 模块已挂载。
@@ -70,8 +71,8 @@ echo "      [2/4] 注入 permissive 域 + 模块 sepolicy 规则..."
 $T30 adb shell "su 0 $MP --live 'permissive kernel' 'permissive zygote' 'permissive system_server'" >/dev/null 2>&1
 $T30 adb shell "su 0 sh -c 'for r in /data/adb/modules/*/sepolicy.rule; do [ -f \"\$r\" ] && $MP --apply \"\$r\" 2>/dev/null; done'" >/dev/null 2>&1
 
-echo "      [3/4] 重置 daemon 状态并重启注入链..."
-$T30 adb shell "su 0 sh -c 'pkill -9 -f zn-daemon 2>/dev/null; pkill -9 -f zn-zygisk 2>/dev/null; pkill -9 lspd 2>/dev/null; sleep 1; rm -f /data/adb/zygisksu/.abort_msg /data/adb/zygisksu/.injecting 2>/dev/null; sh $MOD/service.sh'" >/dev/null 2>&1
+echo "      [3/4] 清失败标记并重启注入链..."
+$T30 adb shell "su 0 sh -c 'pkill -9 -f zn-daemon 2>/dev/null; pkill -9 -f zn-zygisk 2>/dev/null; pkill -9 lspd 2>/dev/null; sleep 1; rm -f /data/adb/zygisksu/.abort_msg /data/adb/zygisksu/.injecting $MOD/disable 2>/dev/null; [ \"\$(head -c 1 $MOD/module.prop 2>/dev/null)\" = \"[\" ] && cp $MOD/module.prop.orig $MOD/module.prop 2>/dev/null; sh $MOD/service.sh'" >/dev/null 2>&1
 
 echo "      [4/4] 等待注入落位(最长 90s)..."
 ok=0
@@ -82,6 +83,10 @@ for i in $(seq 1 18); do
 done
 
 if [ $ok -eq 1 ]; then
+    # lspd 启动/管理器打开时用 dex2oat 探针自检 sepolicy 规则是否加载,
+    # 其启动链路可能冲掉 [2/4] 注入的模块规则——注入落位后补一遍,
+    # 否则 LSPosed 管理器报 "SEPolicy 未被正确加载"(dex2oat AVC denied)。
+    $T30 adb shell "su 0 sh -c 'for r in /data/adb/modules/*/sepolicy.rule; do [ -f \"\$r\" ] && $MP --apply \"\$r\" 2>/dev/null; done'" >/dev/null 2>&1
     echo "      Zygisk 注入成功: zygote 已加载 LSPosed zygisk 模块"
     echo "      (lspd 日志: /data/adb/lspd/log/ ; LSPosed 入口在通知栏)"
     exit 0
