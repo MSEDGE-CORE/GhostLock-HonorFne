@@ -37,6 +37,15 @@ if [ -z "$MP" ]; then
     echo "      [警告] 设备上未找到 magiskpolicy, 跳过(需 chain 部署目录)"
     exit 1
 fi
+# 设备正在重启时不动 daemon(ksud 会报 "Android is Booting", 半启动状态
+# 下重启注入链有整机重启风险) —— 等启动完成, 最长 180s。
+n=0
+bc=$($T15 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+while [ "$bc" != "1" ] && [ $n -lt 36 ]; do
+    echo "        等待系统完成启动 (boot_completed=$bc, $((n*5))s)..."
+    sleep 5; n=$((n+1))
+    bc=$($T15 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+done
 
 echo "      [1/4] 注入 permissive 域 + 模块 sepolicy 规则..."
 $T30 adb shell "su 0 $MP --live 'permissive kernel' 'permissive zygote' 'permissive system_server'" >/dev/null 2>&1

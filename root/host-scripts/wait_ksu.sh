@@ -16,8 +16,10 @@ LAST_STATUS=""
 echo "等待 KSU 晚加载链完成（最长 180 秒，实时显示链日志）..."
 
 poll() {
-    # adb 可能因设备重启瞬时不可用：失败只返回空，不中断轮询
-    $T15 adb shell "grep -q kernelsu /proc/modules" >/dev/null 2>&1 && return 0
+    # adb 可能因设备重启瞬时不可用：失败只返回空，不中断轮询。
+    # 成功判定必须实测 su —— 仅模块在 /proc/modules 不够: 设备重启瞬间
+    # 垂死 boot 里模块仍在但 su 不可用, 会产生假成功(FNE 实测)。
+    $T15 adb shell "su 0 id" 2>/dev/null | grep -q "uid=0" && return 0
     return 1
 }
 

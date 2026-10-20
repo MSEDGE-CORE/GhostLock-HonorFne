@@ -23,7 +23,14 @@ run_to() { # $1=secs $2=logfile $3...=command
   local pid=$!
   tail -n +1 -f "$logf" 2>/dev/null &
   local tpid=$!
-  ( sleep "$secs"; kill "$pid" 2>/dev/null ) &
+  # 看门狗必须: (a) stdout/stderr 重定向到 /dev/null —— 否则被 kill 后孤儿
+  # sleep 持有 run_forever 的 tee 管道, FINAL 后终端假死最长 900s(实测);
+  # (b) 轮询式而非 `sleep N` —— 主进程退出后 ≤2s 自行结束, 不留长命孤儿。
+  ( end=$((SECONDS + secs))
+    while kill -0 "$pid" 2>/dev/null && [ "$SECONDS" -lt "$end" ]; do
+      sleep 2
+    done
+    kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
   local wd=$!
   local rc=0
   wait "$pid" || rc=$?

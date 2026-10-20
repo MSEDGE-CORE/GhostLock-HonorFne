@@ -26,6 +26,21 @@ else
 fi
 
 # --- 2. KSU 模块（ksud 官方安装） ---
+# 前置守卫: 设备若正在重启(ksud 报 "Error: Android is Booting!")或 root
+# 已随重启丢失, 等启动完成再复检 root —— 都不行则明确报错而非静默失败。
+n=0
+bc=$($T30 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+while [ "$bc" != "1" ] && [ $n -lt 36 ]; do
+    echo "      等待系统完成启动 (boot_completed=$bc, $((n*5))s)..."
+    sleep 5; n=$((n+1))
+    bc=$($T30 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+done
+if ! $T30 adb shell "su 0 id" 2>/dev/null | grep -q "uid=0"; then
+    echo "      [警告] root 不可用(设备重启后 KSU 已丢), 模块安装跳过"
+    echo "      提示: 重新运行一键脚本 grind 即可恢复"
+    exit 1
+fi
+
 install_mod() { # $1=zip
     local zip=$1 zid stage out rc
     zid=$(basename "$zip" .zip)
