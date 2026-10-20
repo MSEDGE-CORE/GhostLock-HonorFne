@@ -203,7 +203,64 @@ public final class SystemUIHooks {
                 if (!shotBlurCls.isInstance(param.thisObject)) {
                     return;
                 }
+                // 静态快照层的 alpha 动画只作驱动信号, 不再改写它本身:
+                // 强制 alpha=0 会污染 stock 淡入/淡出动画的起点值
+                // (进入闪一帧 0 模糊, 退出模糊度突变 0).
+                Port.log("blurProbe setAlpha t=" + android.os.SystemClock.uptimeMillis()
+                        + " a=" + param.args[0] + " vis=" + ((View) param.thisObject).getVisibility());
                 applyShadeBlur(shadeCtrlCls, (Float) param.args[0]);
+            }
+        });
+        // 隐藏静态快照层: 只接管模糊位图 (BitmapDrawable), 换成 stock 同款
+        // 遮罩色 (R.color.window_blur_view_mask_color, 日/夜由系统解析) —
+        // SF 真窗口模糊是纯高斯无压暗, 白底界面需要这层遮罩保持 stock
+        // 的压暗/对比度. stock 的 ColorDrawable 兜底/scrim 保持原样.
+        XposedHelpers.findAndHookMethod(View.class, "setBackground",
+                android.graphics.drawable.Drawable.class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                if (!Port.on(Port.KEY_CC_REAL_BLUR)) {
+                    return;
+                }
+                if (!shotBlurCls.isInstance(param.thisObject)) {
+                    return;
+                }
+                if (!(param.args[0] instanceof android.graphics.drawable.BitmapDrawable)) {
+                    return;
+                }
+                param.args[0] = new android.graphics.drawable.ColorDrawable(
+                        blurMaskColor((View) param.thisObject));
+            }
+        });
+
+        // [probe] 上滑接管瞬间: 面板 fraction 硬切 (setExpandedFraction(0))
+        final Class<?> panelViewCls = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.NotificationPanelView", cl);
+        XposedHelpers.findAndHookMethod(panelViewCls, "setExpandedFraction",
+                float.class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                Port.log("blurProbe fraction t=" + android.os.SystemClock.uptimeMillis()
+                        + " f=" + param.args[0]);
+            }
+        });
+        // [probe] stock 侧任何窗口模糊写入 (含 0)
+        XposedHelpers.findAndHookMethod(shadeCtrlCls, "applyWindowBlur",
+                View.class, float.class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                Port.log("blurProbe awb t=" + android.os.SystemClock.uptimeMillis()
+                        + " r=" + param.args[1]);
+            }
+        });
+        // [probe] stock 退出/进入模糊动画启动
+        XposedHelpers.findAndHookMethod(
+                XposedHelpers.findClass(PANEL_IMPL_CLS, cl), "startBlurAnimation",
+                boolean.class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                Port.log("blurProbe startBlurAnim t=" + android.os.SystemClock.uptimeMillis()
+                        + " isIn=" + param.args[0]);
             }
         });
 
@@ -434,7 +491,21 @@ public final class SystemUIHooks {
         }
     }
 
-    private static void applyShadeBlur(Class<?> shadeCtrlCls, float alpha) {
+    /** stock 快照层遮罩色: R.color.window_blur_view_mask_color (0x7f060c02),
+     *  SystemUI 自己的资源, 日/夜间值由系统解析; 取不到退回 20% 黑. */
+    private static int blurMaskColor(View v) {
+        try {
+            return v.getContext().getColor(0x7f060c02);
+        } catch (Throwable t) {
+            Port.log("SystemUIHooks: mask color fallback", t);
+            return 0x33000000;
+        }
+    }
+
+    /** 模糊半径严格匹配快照层 alpha: radius = alpha * keyguard_blur_max * 4.
+     *  stock 快照层 alpha 由 stock 自己的动画驱动 (打开 friction 曲线,
+     *  关闭 100ms 延迟 + sharp 曲线), 不做任何时长/保持魔改. */
+    private static void applyShadeBlur(final Class<?> shadeCtrlCls, float alpha) {
         Object ctrl = sShadeCtrl.get();
         if (ctrl == null) {
             return;
@@ -451,8 +522,9 @@ public final class SystemUIHooks {
                         ((android.content.Context) ctx).getContentResolver(),
                         "keyguard_blur_max", 60);
             }
-            float radius = alpha * max;
+            float radius = alpha * max * 4f;
             XposedHelpers.callMethod(ctrl, "applyWindowBlur", shadeView, radius);
+            Port.log("shadeBlur a=" + alpha + " r=" + radius);
         } catch (Throwable t) {
             Port.log("SystemUIHooks: applyShadeBlur failed", t);
         }

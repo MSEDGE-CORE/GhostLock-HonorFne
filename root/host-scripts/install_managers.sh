@@ -27,20 +27,23 @@ fi
 
 # --- 2. KSU 模块（ksud 官方安装） ---
 install_mod() { # $1=zip
-    local zip=$1 zid stage
+    local zip=$1 zid stage out rc
     zid=$(basename "$zip" .zip)
     stage=/data/local/tmp/.gl_mod_$zid.zip
     if ! $T180 adb push "$zip" $stage >/dev/null 2>&1; then
         echo "      [警告] $zid 中转推送失败"
         return 1
     fi
-    # ksud module install: 走完整 customize.sh(校验/补丁/权限), 装入
-    # modules_update, 下次模块挂载(下轮 grind 成功后 ksud 启动)生效
-    if $T180 adb shell "su 0 /data/adb/ksud module install $stage" >/dev/null 2>&1; then
-        echo "      模块 $zid 官方流程安装成功（下次 KSU 加载生效）"
-    else
-        echo "      [警告] 模块 $zid 安装失败"
+    out=$($T180 adb shell "su 0 /data/adb/ksud module install $stage" 2>&1 | tr -d '\r')
+    rc=$?
+    # adb shell 不一定可靠回传设备退出码, 以 "successfully" 文本双保险
+    if [ $rc -ne 0 ] || ! echo "$out" | grep -q successfully; then
+        echo "      [警告] 模块 $zid 安装失败 (rc=$rc):"
+        echo "$out" | tail -n 6 | sed 's/^/        /'
+        $T30 adb shell "rm -f $stage" >/dev/null 2>&1
+        return 1
     fi
+    echo "      模块 $zid 官方流程安装成功（下次 KSU 加载生效）"
     $T30 adb shell "su 0 rm -f $stage" >/dev/null 2>&1
 }
 
