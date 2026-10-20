@@ -10,3 +10,7 @@ hooks/launcher/build/
 hooks/launcher/app/build/
 hooks/launcher/xposed-api/build/
 hooks/launcher/out/
+
+# grind 日志
+root/host-scripts/*.log
+root/host-scripts/w1_try*.log
