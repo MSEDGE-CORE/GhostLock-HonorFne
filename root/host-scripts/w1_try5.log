@@ -1,0 +1,136 @@
+[33m[T+129.544] [*] [0mknobs: HOLD_CHAIN=1 STAMP_SYNC=1 STAMP_PRE_M4=0 CANARY_SEQ=0 CANARY_RATCHET=0 CANARY_ARM=0 CHAIN_BAIL=0 ROUTE_ATTEMPTS=1 OWNER_HANDOFF=0 PUNCH_IN_WINDOW=1 MCAST_SHIFT=24 M4_TIMEOUT_MS=1000 PROBE_BOOTID=0 STAMP_ECHO=0 ARM_T=0 ARM_T_T2=0 SPRAY_TEST=0
+[33m[T+129.544] [*] [0mkernel: 5.4.289-qgki-gf6cb1f712a6e
+[32m[T+129.544] [+] [0moffsets matched: 5.4.289-qgki-gf6cb1f712a6e
+[33m[T+129.544] [*] [0minit_cred image=ffffffc012a8f5e0 alias=ffffff80aaa0f5e0
+[33m[T+129.544] [*] [0mp0 kernel_phys_load=0000000128000000 phys_offset=0000000080000000 delta=00000000a8000000
+[33m[T+129.545] [*] [0mmemstart probe: start max=8s
+[33m[T+131.173] [*] [0mmemstart probe: slide=0x290c400000 votes=31833
+[33m[T+132.173] [*] [0mmemstart probe: done total=121287 wins=69 slide=176299180032 iter=1788
+[33m[T+132.173] [*] [0mdm: override phys_offset=0xfffffffc00000000 page_offset=0xffffff8000000000
+[32m[T+132.173] [+] [0mmemstart probe: memstart=0xfffffffc00000000 (-16 GiB) slide=0x290c400000 kinds=3 votes=69
+[33m[T+135.004] [*] [0mWrite 1 attempt 1/2
+[33m[T+135.004] [*] [0m=== W1: SELinux === target=0xffffffe91f08e001 mode=1
+[33m[T+135.008] [*] [0m[T+135009ms]   heap spray start
+[33m[T+135.011] [*] [0mdm: gate fail (base=0xffffff85850a6000); retiring page, taking a fresh one (round 0)
+[33m[T+135.014] [*] [0mdm: gate fail (base=0xffffff85782bf000); retiring page, taking a fresh one (round 1)
+[33m[T+135.016] [*] [0mdm: gate fail (base=0xffffff857af75000); retiring page, taking a fresh one (round 2)
+[33m[T+135.018] [*] [0mdm: gate fail (base=0xffffff85773fd000); retiring page, taking a fresh one (round 3)
+[33m[T+135.021] [*] [0mdm: gate fail (base=0xffffff8576eb0000); retiring page, taking a fresh one (round 4)
+[33m[T+135.023] [*] [0mdm: gate fail (base=0xffffff8576eb1000); retiring page, taking a fresh one (round 5)
+[33m[T+135.025] [*] [0mdm: gate fail (base=0xffffff859be52000); retiring page, taking a fresh one (round 6)
+[33m[T+135.027] [*] [0mdm: gate fail (base=0xffffff85773fc000); retiring page, taking a fresh one (round 7)
+[33m[T+135.029] [*] [0mdm: gate fail (base=0xffffff859be53000); retiring page, taking a fresh one (round 8)
+[33m[T+135.031] [*] [0mdm: gate fail (base=0xffffff85927d0000); retiring page, taking a fresh one (round 9)
+[33m[T+135.034] [*] [0mdm: gate fail (base=0xffffff8563333000); retiring page, taking a fresh one (round 10)
+[33m[T+135.036] [*] [0mdm: gate fail (base=0xffffff85a61f0000); retiring page, taking a fresh one (round 11)
+[33m[T+135.038] [*] [0mdm: gate fail (base=0xffffff8594b7e000); retiring page, taking a fresh one (round 12)
+[33m[T+135.041] [*] [0mdm: gate fail (base=0xffffff858abea000); retiring page, taking a fresh one (round 13)
+[33m[T+135.043] [*] [0mdm: gate fail (base=0xffffff8594b26000); retiring page, taking a fresh one (round 14)
+[33m[T+135.045] [*] [0mdm: gate fail (base=0xffffff858b559000); retiring page, taking a fresh one (round 15)
+[33m[T+135.047] [*] [0mdm: gate fail (base=0xffffff8591b2f000); retiring page, taking a fresh one (round 16)
+[33m[T+135.049] [*] [0mdm: gate fail (base=0xffffff8594b27000); retiring page, taking a fresh one (round 17)
+[33m[T+135.052] [*] [0mdm: gate fail (base=0xffffff85a61f1000); retiring page, taking a fresh one (round 18)
+[33m[T+135.054] [*] [0mdm: gate fail (base=0xffffff85782e9000); retiring page, taking a fresh one (round 19)
+[33m[T+135.056] [*] [0mdm: gate fail (base=0xffffff85927d1000); retiring page, taking a fresh one (round 20)
+[33m[T+135.059] [*] [0mdm: gate fail (base=0xffffff857af74000); retiring page, taking a fresh one (round 21)
+[33m[T+135.061] [*] [0mdm: gate fail (base=0xffffff8578648000); retiring page, taking a fresh one (round 22)
+[33m[T+135.063] [*] [0mdm: gate fail (base=0xffffff857863f000); retiring page, taking a fresh one (round 23)
+[33m[T+135.066] [*] [0mdm: gate fail (base=0xffffff856885f000); retiring page, taking a fresh one (round 24)
+[33m[T+135.068] [*] [0mdm: gate fail (base=0xffffff857812c000); retiring page, taking a fresh one (round 25)
+[33m[T+135.071] [*] [0mdm: gate fail (base=0xffffff8578069000); retiring page, taking a fresh one (round 26)
+[33m[T+135.073] [*] [0mdm: gate fail (base=0xffffff8578068000); retiring page, taking a fresh one (round 27)
+[33m[T+135.075] [*] [0mdm: gate fail (base=0xffffff8578037000); retiring page, taking a fresh one (round 28)
+[33m[T+135.078] [*] [0mdm: gate fail (base=0xffffff8578036000); retiring page, taking a fresh one (round 29)
+[33m[T+135.080] [*] [0mdm: gate fail (base=0xffffff8578727000); retiring page, taking a fresh one (round 30)
+[33m[T+135.082] [*] [0mdm: gate fail (base=0xffffff85a4c1e000); retiring page, taking a fresh one (round 31)
+[33m[T+135.085] [*] [0mdm: gate fail (base=0xffffff85781ef000); retiring page, taking a fresh one (round 32)
+[33m[T+135.087] [*] [0mdm: gate fail (base=0xffffff8578711000); retiring page, taking a fresh one (round 33)
+[33m[T+135.089] [*] [0mdm: gate fail (base=0xffffff8578726000); retiring page, taking a fresh one (round 34)
+[33m[T+135.092] [*] [0mdm: gate fail (base=0xffffff8578649000); retiring page, taking a fresh one (round 35)
+[33m[T+135.094] [*] [0mdm: gate fail (base=0xffffff8578710000); retiring page, taking a fresh one (round 36)
+[33m[T+135.097] [*] [0mdm: gate fail (base=0xffffff857811f000); retiring page, taking a fresh one (round 37)
+[33m[T+135.099] [*] [0mdm: gate fail (base=0xffffff857811e000); retiring page, taking a fresh one (round 38)
+[33m[T+135.102] [*] [0mdm: gate fail (base=0xffffff857812d000); retiring page, taking a fresh one (round 39)
+[33m[T+135.104] [*] [0mdm: gate fail (base=0xffffff85781ee000); retiring page, taking a fresh one (round 40)
+[33m[T+135.107] [*] [0mdm: gate fail (base=0xffffff85a7a13000); retiring page, taking a fresh one (round 41)
+[33m[T+135.109] [*] [0mdm: gate fail (base=0xffffff85a7a12000); retiring page, taking a fresh one (round 42)
+[33m[T+135.111] [*] [0mdm: gate fail (base=0xffffff8563531000); retiring page, taking a fresh one (round 43)
+[33m[T+135.114] [*] [0mdm: gate fail (base=0xffffff8578561000); retiring page, taking a fresh one (round 44)
+[33m[T+135.116] [*] [0mdm: gate fail (base=0xffffff8578af6000); retiring page, taking a fresh one (round 45)
+[33m[T+135.119] [*] [0mdm: gate fail (base=0xffffff857ae9f000); retiring page, taking a fresh one (round 46)
+[33m[T+135.121] [*] [0mdm: gate fail (base=0xffffff857ae9e000); retiring page, taking a fresh one (round 47)
+[33m[T+135.123] [*] [0mdm: gate fail (base=0xffffff857aca5000); retiring page, taking a fresh one (round 48)
+[33m[T+135.126] [*] [0mdm: gate fail (base=0xffffff857aca4000); retiring page, taking a fresh one (round 49)
+[33m[T+135.129] [*] [0mdm: gate fail (base=0xffffff8586878000); retiring page, taking a fresh one (round 50)
+[33m[T+135.131] [*] [0mdm: gate fail (base=0xffffff857863e000); retiring page, taking a fresh one (round 51)
+[33m[T+135.134] [*] [0mdm: gate fail (base=0xffffff857ac5e000); retiring page, taking a fresh one (round 52)
+[33m[T+135.136] [*] [0mdm: gate fail (base=0xffffff857ac5f000); retiring page, taking a fresh one (round 53)
+[33m[T+135.138] [*] [0mdm: gate fail (base=0xffffff858a490000); retiring page, taking a fresh one (round 54)
+[33m[T+135.141] [*] [0mdm: gate fail (base=0xffffff858a491000); retiring page, taking a fresh one (round 55)
+[33m[T+135.143] [*] [0mdm: gate fail (base=0xffffff8578560000); retiring page, taking a fresh one (round 56)
+[33m[T+135.145] [*] [0mdm: gate fail (base=0xffffff8578af7000); retiring page, taking a fresh one (round 57)
+[33m[T+135.148] [*] [0mdm: gate fail (base=0xffffff857857e000); retiring page, taking a fresh one (round 58)
+[33m[T+135.151] [*] [0mdm: gate fail (base=0xffffff857857f000); retiring page, taking a fresh one (round 59)
+[33m[T+135.154] [*] [0mdm: phys=0x16fb30000 base=0xffffff856fb30000 lock=0xffffff856fb30000 w0=0xffffff856fb30300 task=0xffffff856fb30400
+[33m[T+135.154] [*] [0mdm: plant dump lock=0000000000000000 root=ffffff856fb30300 leftmost=ffffff856fb30300 owner=ffffff856fb30401 w0+38=ffffff856fb30000 (expect root=leftmost=w0 owner=task|1 w0+38=lock)
+[33m[T+135.154] [*] [0mdm: mlock plant=0 errno=0
+[33m[T+135.154] [*] [0m[T+135154ms]   heap spray done
+[33m[T+135.154] [*] [0mO0 owner: parked at nice 19 (prio 39)
+[33m[T+135.155] [*] [0mO1 owner: target-locked
+[33m[T+135.155] [*] [0mO2 owner: pre-chain-lock
+[33m[T+135.155] [*] [0mM4 waiter: entering WAIT_REQUEUE_PI (timeout=1000ms)
+[33m[T+135.207] [*] [0mM5 main: firing CMP_REQUEUE_PI
+[33m[T+135.207] [*] [0mM6x probe: f_wait=0 f_pi_target=9437 f_pi_chain=2147493084 main=7307 waiter=9436 owner=9437 waiter_prio=20
+[33m[T+135.207] [*] [0mM6 main: CMP_REQUEUE_PI ret=-1 errno=35
+[33m[T+135.207] [*] [0mM6i main: firing post-M6 in-window punch seq=100 delay=0usec (m4_timeout=1000ms waiter_prio=20)
+[33m[T+135.207] [*] [0mconsumer: saw seq=100
+[33m[T+135.207] [*] [0mDMpre root=ffffff856fb30300 leftmost=ffffff856fb30300 pc=ffffffe91f08dff8 child=0000000000000000
+[33m[T+135.207] [*] [0mC0 consumer: about to punch tid=9436 nice=18
+[33m[T+135.207] [*] [0mC2 consumer: first punch ret=0 errno=0
+[33m[T+135.207] [*] [0mP1 consumer: waiter prio18 post-punch=38 (39/38=punch-applied 20=NOT-applied)
+[33m[T+135.208] [*] [0mC3 consumer: owner prio post-punch=39 (38/20=walk-boosted, 39=no-walk)
+[33m[T+135.208] [*] [0mDMcanary root=ffffff856fb30300 leftmost=ffffff856fb30300 pc=ffffffe91f08dff8 self=ffffff856fb30318 child=0000000000000000 exp_parent=ffffffe91f08dff8 usage=0000000000000100 troot=0000000000000000 tleft=0000000000000000 relink=0 erase_ran=0 W1_child=0
+[33m[T+135.208] [*] [0mM4 waiter: WAIT_REQUEUE_PI ret=-1 errno=11 (SF removed)
+[33m[T+135.208] [*] [0mM6j main: post-M6 in-window punch done=1 waited=1ms
+[33m[T+135.208] [*] [0mmain: M6 done — waiting for route_done
+[33m[T+135.208] [*] [0mM4b waiter: GL_HOLD_CHAIN — deferring chain unlock until after the carrier (owner stays parked in O2)
+[33m[T+135.208] [*] [0mmcast shift sweep=24 cycle=0
+[33m[T+135.209] [*] [0mmcast pre-stamp begin attempt=1 payload=0x63ba7d0260
+[33m[T+135.209] [*] [0mmcast pre-stamp done attempt=1 ret=-1 errno=22
+[33m[T+135.209] [*] [0mmcast route setup attempt=1 page=ffffff856fb30000 fake_lock=ffffff856fb30000 fake_w0=ffffff856fb30300 fake_task=ffffff856fb30400 pre_ret=-1 pre_errno=22 delay=0
+[33m[T+135.209] [*] [0msync pre-stamp begin
+[33m[T+135.209] [*] [0mconsumer: saw seq=1
+[33m[T+135.209] [*] [0mDMpre root=ffffff856fb30300 leftmost=ffffff856fb30300 pc=ffffffe91f08dff8 child=0000000000000000
+[33m[T+135.209] [*] [0mC0 consumer: about to punch tid=9436 nice=19
+[33m[T+135.209] [*] [0mC2 consumer: first punch ret=0 errno=0
+[33m[T+135.209] [*] [0mP1 consumer: waiter prio18 post-punch=39 (39/38=punch-applied 20=NOT-applied)
+[33m[T+135.209] [*] [0mC3 consumer: owner prio post-punch=39 (38/20=walk-boosted, 39=no-walk)
+[33m[T+135.209] [*] [0mDMcanary root=ffffffc0284c9cd0 leftmost=ffffffc0284c9cd0 pc=ffffff856fb30318 self=ffffff856fb30318 child=ffffffe91f08dff8 exp_parent=ffffffe91f08dff8 usage=0000000000000100 troot=ffffffc0284c9ce8 tleft=ffffffc0284c9ce8 relink=1 erase_ran=1 W1_child=1
+[33m[T+135.210] [*] [0msync hold done calls=1 success=1
+[33m[T+135.210] [*] [0mmcast returned attempt=1 calls=1 success=1 pre_ret=-1 pre_errno=22 delay=0 +1ms
+[33m[T+135.211] [*] [0mmcast route done calls=1 success=1 step=0 errno=0
+[33m[T+135.211] [*] [0mP2 waiter: own prio post-route=39
+[33m[T+135.211] [*] [0mR1 post-route read fd=4 ret=0 errno=0 val=0000000000000000
+[33m[T+135.212] [*] [0mM4b waiter: post-carrier chain unlock ret=0 errno=0
+[33m[T+135.212] [*] [0mO3 owner: chain-locked
+[33m[T+135.213] [*] [0mP3 waiter: GL_HOLD_WAITER=1 — parking forever to keep pi_blocked_on dangle alive (post-walk exit would walk the ghost on a torn-down stack and panic)
+[33m[T+135.213] [*] [0m[T+135214ms]   PI route done
+[32m[T+135.314] [+] [0mSELinux DISABLED
+[33m[T+138.422] [*] [0mW1b: sig_enforce attempt 1/6
+[33m[T+138.422] [*] [0m=== W1b: sig_enforce === target=0xffffffe91ee9e5e0 mode=5
+[33m[T+138.423] [*] [0m[T+138423ms]   heap spray start
+[33m[T+138.426] [*] [0mdm: phys=0x16fb30000 base=0xffffff856fb30000 lock=0xffffff856fb30000 w0=0xffffff856fb30300 task=0xffffff856fb30400
+[33m[T+138.426] [*] [0mdm: plant dump lock=0000000000000000 root=ffffff856fb30300 leftmost=ffffff856fb30300 owner=ffffff856fb30401 w0+38=ffffff856fb30000 (expect root=leftmost=w0 owner=task|1 w0+38=lock)
+[33m[T+138.426] [*] [0mdm: mlock plant=0 errno=35
+[33m[T+138.426] [*] [0m[T+138426ms]   heap spray done
+[33m[T+138.427] [*] [0mO0 owner: parked at nice 19 (prio 39)
+[33m[T+138.427] [*] [0mO1 owner: target-locked
+[33m[T+138.427] [*] [0mO2 owner: pre-chain-lock
+[33m[T+138.428] [*] [0mM4 waiter: entering WAIT_REQUEUE_PI (timeout=1000ms)
+[33m[T+138.478] [*] [0mM5 main: firing CMP_REQUEUE_PI
+[33m[T+138.478] [*] [0mM6x probe: f_wait=0 f_pi_target=11449 f_pi_chain=2147495096 main=7307 waiter=11448 owner=11449 waiter_prio=20
+[33m[T+138.479] [*] [0mM6 main: CMP_REQUEUE_PI ret=-1 errno=35
+[33m[T+138.479] [*] [0mM6i main: firing post-M6 in-window punch seq=100 delay=0usec (m4_timeout=1000ms waiter_prio=20)
+[33m[T+138.479] [*] [0mconsumer: saw seq=100
+[33m[T+138.479] [*] [0mDMpre root=ffffff856fb30300 leftmost=ffffff856fb30300 pc=ffffffe91ee9e5d8 child=0000000000000001
+[33m[T+138.479] [*] [0mC0 consumer: about to punch tid=11448 nice=18
