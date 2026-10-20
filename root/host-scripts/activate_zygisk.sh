@@ -21,11 +21,22 @@
 #      daemon 启动时校验完整状态现场(bugreports/ 等), 状态目录被清后必报
 #      "Module files corrupted" 并写 disable 自禁(FNE 23:38/23:42 实测,
 #      恢复现场后 23:47 一次成功)。
-#   4. 90s 未注入只输出诊断, 不再 kill zygote: FNE 实测 [5/5] 兜底 kill
+#   4. verify1 真相(FNE 02:18 kprobe 实证): daemon 失败前只 open 过
+#       /data/adb/zygisksu/.magic, 完全不碰模块文件 —— verify1 = .magic
+#       内容校验, 与 module.prop 无关; 失败路径会用随机值"毒丸化".magic 并
+#       再生新值。唯一已知有效值 = /data/adb/zygisksu.bak/.magic(02:08/02:11
+#       两次实证过 verify1), 必须在起 daemon 前恢复。
+#   5. RescueParty 才是所谓"荣耀看门狗"(02:42 dumpsys 实证): 每次开机
+#      ~7min 后逐级升级(UNTRUSTED_DEFAULTS→CHANGES→TRUSTED→WARM_REBOOT,
+#      每 12min 一级, ~42min 温重启整机), 23:46 甚至执行过 FACTORY_RESET
+#      级救援(/data 幸存属侥幸)。root 后立即禁用, persist 属性永久止血。
+#   6. 90s 未注入只输出诊断, 不再 kill zygote: FNE 实测 [5/5] 兜底 kill
 #      两次诱发整机硬重启(22:45/23:24), 已移除。
 # 前置: KSU 已就绪(su 0 可用); zygisksu/zygisk_lsposed 模块已挂载。
 # zygote pid 解析必须用 pidof: pgrep -x zygote64 不匹配(comm 为 main),
 # pgrep -f 会误匹配 shell 自身命令行(FNE 实测三者输出互不相同)。
+# daemon 起动后 prctl 改名 comm=zn-daemon(cmdline 仍 zygiskd64 daemon),
+# pkill -f zn-daemon 匹配 cmdline 失效, 必须用 comm 匹配 pkill zn-daemon。
 cd "$(dirname "$0")/../.." || exit 1
 T15=""; T30=""
 command -v timeout >/dev/null 2>&1 && { T15="timeout 15"; T30="timeout 30"; }
@@ -49,6 +60,9 @@ while ! have_root; do
     fi
     sleep 5; n=$((n + 1))
 done
+# RescueParty 止血(见头部注释 5): persist 属性跨重启永久生效。
+# 两种命名都覆盖(AOSP/Honor 分支差异), root 下 setprop persist.* 必成。
+$T15 adb shell "su 0 sh -c 'setprop persist.sys.enable_rescue_party false; setprop persist.sys.disable_rescue true'" >/dev/null 2>&1
 if ! $T15 adb shell "su 0 test -f $MOD/service.sh" 2>/dev/null; then
     echo "      [提示] zygisksu 模块未挂载(可能未安装), 跳过"
     exit 0
@@ -83,10 +97,13 @@ echo "      [3/4] 还原 module.prop + 清失败标记并重启注入链..."
 # daemon 两种失败改写格式(29B 裸标记 / description 嵌入)都会破坏
 # verify1 哈希自检, module.prop.orig 也可能被连带改坏, 故无条件双还原。
 PRISTINE_B64='aWQ9enlnaXNrc3UKbmFtZT1aeWdpc2sgTmV4dAp2ZXJzaW9uPTEuNS4yICg4NjQtYTRhNzJjZS1yZWxlYXNlKQp2ZXJzaW9uQ29kZT04NjQKYXV0aG9yPUxTUG9zZWQgRGV2ZWxvcGVycwpkZXNjcmlwdGlvbj1TdGFuZGFsb25lIGltcGxlbWVudGF0aW9uIG9mIFp5Z2lzay4KdXBkYXRlSnNvbj1odHRwczovL2xzcG9zZWQuemlwL3p5Z2lzay1uZXh0L3VwZGF0ZS5qc29uCg=='
-$T30 adb shell "su 0 sh -c 'pkill -9 -f zn-daemon 2>/dev/null; pkill -9 -f zn-zygisk 2>/dev/null; pkill -9 lspd 2>/dev/null; sleep 1; echo $PRISTINE_B64 | base64 -d > $MOD/module.prop.orig; cp $MOD/module.prop.orig $MOD/module.prop; rm -f /data/adb/zygisksu/.abort_msg /data/adb/zygisksu/.injecting $MOD/disable $MOD/update; sh $MOD/service.sh'" >/dev/null 2>&1
+$T30 adb shell "su 0 sh -c 'pkill -9 zn-daemon 2>/dev/null; pkill -9 zygiskd64 2>/dev/null; pkill -9 lspd 2>/dev/null; sleep 1; echo $PRISTINE_B64 | base64 -d > $MOD/module.prop.orig; cp $MOD/module.prop.orig $MOD/module.prop; rm -f /data/adb/zygisksu/.abort_msg /data/adb/zygisksu/.injecting $MOD/disable $MOD/update; if [ -f /data/adb/zygisksu.bak/.magic ]; then cp /data/adb/zygisksu.bak/.magic /data/adb/zygisksu/.magic; chmod 666 /data/adb/zygisksu/.magic; fi; sh $MOD/service.sh'" >/dev/null 2>&1
 h=$($T15 adb shell "su 0 sha256sum $MOD/module.prop" 2>/dev/null | tr -d '\r' | cut -c1-16)
 if [ "$h" != "2f8cdf9a676ed7b8" ]; then
     echo "      [警告] module.prop 还原后哈希异常($h), verify1 大概率失败"
+fi
+if ! $T15 adb shell "su 0 sh -c 'cmp -s /data/adb/zygisksu.bak/.magic /data/adb/zygisksu/.magic'" 2>/dev/null; then
+    echo "      [警告] .magic 未能恢复为已知有效值(zygisksu.bak 缺失或复制失败), verify1 必挂"
 fi
 
 echo "      [4/4] 等待注入落位(最长 90s)..."
