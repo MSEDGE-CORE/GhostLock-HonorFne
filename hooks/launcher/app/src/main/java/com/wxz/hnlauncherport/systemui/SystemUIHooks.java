@@ -52,6 +52,12 @@ public final class SystemUIHooks {
             "com.android.systemui.statusbar.phone.HnPanelAnimatorManager";
 
     private static WeakReference<Object> sShadeCtrl = new WeakReference<Object>(null);
+    /** 快照层弱引用 (重放半径时读实时 alpha). */
+    private static WeakReference<View> sBlurView = new WeakReference<View>(null);
+    /** 逐帧重放回调 (对抗 surface 重建/relayout 重置模糊半径). */
+    private static boolean sBlurLoopRunning = false;
+    /** 当前半径基线 (同步到窗口 LayoutParams, relayout 时自动带上). */
+    private static int sCurBlurRadius = 0;
 
     public static void install(ClassLoader cl) {
         Class<?> ctrl = XposedHelpers.findClass(CTRL_CLS, cl);
@@ -208,61 +214,84 @@ public final class SystemUIHooks {
                 // (进入闪一帧 0 模糊, 退出模糊度突变 0).
                 Port.log("blurProbe setAlpha t=" + android.os.SystemClock.uptimeMillis()
                         + " a=" + param.args[0] + " vis=" + ((View) param.thisObject).getVisibility());
+                sBlurView = new WeakReference<View>((View) param.thisObject);
                 applyShadeBlur(shadeCtrlCls, (Float) param.args[0]);
+                ensureBlurLoop(shadeCtrlCls);
             }
         });
-        // 隐藏静态快照层: 只接管模糊位图 (BitmapDrawable), 换成 stock 同款
-        // 遮罩色 (R.color.window_blur_view_mask_color, 日/夜由系统解析) —
-        // SF 真窗口模糊是纯高斯无压暗, 白底界面需要这层遮罩保持 stock
-        // 的压暗/对比度. stock 的 ColorDrawable 兜底/scrim 保持原样.
-        XposedHelpers.findAndHookMethod(View.class, "setBackground",
-                android.graphics.drawable.Drawable.class, new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                if (!Port.on(Port.KEY_CC_REAL_BLUR)) {
-                    return;
-                }
-                if (!shotBlurCls.isInstance(param.thisObject)) {
-                    return;
-                }
-                if (!(param.args[0] instanceof android.graphics.drawable.BitmapDrawable)) {
-                    return;
-                }
-                param.args[0] = new android.graphics.drawable.ColorDrawable(
-                        blurMaskColor((View) param.thisObject));
-            }
-        });
+        // 真窗口模糊过渡期桥接, 全开 (alpha=1) 时归零隐藏 — 不动 stock 静态层.
 
-        // [probe] 上滑接管瞬间: 面板 fraction 硬切 (setExpandedFraction(0))
-        final Class<?> panelViewCls = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.phone.NotificationPanelView", cl);
-        XposedHelpers.findAndHookMethod(panelViewCls, "setExpandedFraction",
-                float.class, new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                Port.log("blurProbe fraction t=" + android.os.SystemClock.uptimeMillis()
-                        + " f=" + param.args[0]);
-            }
-        });
+        // [fix] 把当前模糊半径基线同步进窗口 LayoutParams.backgroundBlurRadius:
+        // surface 重建/relayout (子面板, 长按, 通知, 上滑接管) 会重置 transaction
+        // 写入的模糊半径 → 逐帧重放只能晚一帧恢复. 写进 LP 后任何 relayout
+        // 自动携带模糊, 重建即带半径, 不再有 1 帧空窗.
+        try {
+            XposedBridge.hookAllMethods(shadeCtrlCls, "applyWindowLayoutParams",
+                    new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    if (!Port.on(Port.KEY_CC_REAL_BLUR)) {
+                        return;
+                    }
+                    Object ctrl = param.thisObject;
+                    WindowManager.LayoutParams lp = (WindowManager.LayoutParams)
+                            XposedHelpers.getObjectField(ctrl, "mLp");
+                    WindowManager.LayoutParams lpc = (WindowManager.LayoutParams)
+                            XposedHelpers.getObjectField(ctrl, "mLpChanged");
+                    if (lp != null) {
+                        XposedHelpers.setIntField(lp, "backgroundBlurRadius", sCurBlurRadius);
+                    }
+                    if (lpc != null) {
+                        XposedHelpers.setIntField(lpc, "backgroundBlurRadius", sCurBlurRadius);
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            Port.log("SystemUIHooks: lp blur sync failed", t);
+        }
+        // [probe] 上滑接管瞬间: 面板 fraction 硬切 (setExpandedFraction(0)).
+        // 方法声明在 PanelView, 挂子类会 NoSuchMethodError 中断 install.
+        try {
+            XposedHelpers.findAndHookMethod(
+                    XposedHelpers.findClass(
+                            "com.android.systemui.statusbar.phone.PanelView", cl),
+                    "setExpandedFraction", float.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    Port.log("blurProbe fraction t=" + android.os.SystemClock.uptimeMillis()
+                            + " f=" + param.args[0]);
+                }
+            });
+        } catch (Throwable t) {
+            Port.log("SystemUIHooks: fraction probe failed", t);
+        }
         // [probe] stock 侧任何窗口模糊写入 (含 0)
-        XposedHelpers.findAndHookMethod(shadeCtrlCls, "applyWindowBlur",
-                View.class, float.class, new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                Port.log("blurProbe awb t=" + android.os.SystemClock.uptimeMillis()
-                        + " r=" + param.args[1]);
-            }
-        });
+        try {
+            XposedHelpers.findAndHookMethod(shadeCtrlCls, "applyWindowBlur",
+                    View.class, float.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    Port.log("blurProbe awb t=" + android.os.SystemClock.uptimeMillis()
+                            + " r=" + param.args[1]);
+                }
+            });
+        } catch (Throwable t) {
+            Port.log("SystemUIHooks: awb probe failed", t);
+        }
         // [probe] stock 退出/进入模糊动画启动
-        XposedHelpers.findAndHookMethod(
-                XposedHelpers.findClass(PANEL_IMPL_CLS, cl), "startBlurAnimation",
-                boolean.class, new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                Port.log("blurProbe startBlurAnim t=" + android.os.SystemClock.uptimeMillis()
-                        + " isIn=" + param.args[0]);
-            }
-        });
+        try {
+            XposedHelpers.findAndHookMethod(
+                    XposedHelpers.findClass(PANEL_IMPL_CLS, cl), "startBlurAnimation",
+                    boolean.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    Port.log("blurProbe startBlurAnim t=" + android.os.SystemClock.uptimeMillis()
+                            + " isIn=" + param.args[0]);
+                }
+            });
+        } catch (Throwable t) {
+            Port.log("SystemUIHooks: startBlurAnim probe failed", t);
+        }
 
         // (4b) 控制中心卡片放大锚点 (同 KEY_CC_SPRING_VEL): 上排角锚点, 下排顶边中点
         final Class<?> panelImplCls = XposedHelpers.findClass(PANEL_IMPL_CLS, cl);
@@ -491,20 +520,45 @@ public final class SystemUIHooks {
         }
     }
 
-    /** stock 快照层遮罩色: R.color.window_blur_view_mask_color (0x7f060c02),
-     *  SystemUI 自己的资源, 日/夜间值由系统解析; 取不到退回 20% 黑. */
-    private static int blurMaskColor(View v) {
-        try {
-            return v.getContext().getColor(0x7f060c02);
-        } catch (Throwable t) {
-            Port.log("SystemUIHooks: mask color fallback", t);
-            return 0x33000000;
+    /** 逐帧重放: surface 重建/窗口 relayout 会重置背景模糊半径 (子面板
+     *  打开, 长按, 通知详情, 上滑接管等), stock 的静态层是 view 内部位图
+     *  不受影响, 而我们的真窗口模糊会被清掉. 每帧按快照层实时 alpha 重写,
+     *  快照层不可见时清零并停止. */
+    private static void ensureBlurLoop(final Class<?> shadeCtrlCls) {
+        if (sBlurLoopRunning) {
+            return;
         }
+        sBlurLoopRunning = true;
+        android.view.Choreographer.getInstance().postFrameCallback(
+                new android.view.Choreographer.FrameCallback() {
+            @Override
+            public void doFrame(long frameTimeNanos) {
+                View v = sBlurView.get();
+                if (v == null || v.getVisibility() != View.VISIBLE) {
+                    applyShadeBlur(shadeCtrlCls, 0f); // 半径清零
+                    sBlurLoopRunning = false;
+                    return;
+                }
+                applyShadeBlur(shadeCtrlCls, v.getAlpha());
+                android.view.Choreographer.getInstance().postFrameCallback(this);
+            }
+        });
     }
 
-    /** 模糊半径严格匹配快照层 alpha: radius = alpha * keyguard_blur_max * 4.
-     *  stock 快照层 alpha 由 stock 自己的动画驱动 (打开 friction 曲线,
-     *  关闭 100ms 延迟 + sharp 曲线), 不做任何时长/保持魔改. */
+    /** stock 快照层遮罩色 (已停用, 保留备用): R.color.window_blur_view_mask_color
+     *  (0x7f060c02), SystemUI 自己的资源, 日/夜间值由系统解析; 取不到退回 20% 黑. */
+    // private static int blurMaskColor(View v) {
+    //     try {
+    //         return v.getContext().getColor(0x7f060c02);
+    //     } catch (Throwable t) {
+    //         Port.log("SystemUIHooks: mask color fallback", t);
+    //         return 0x33000000;
+    //     }
+    // }
+
+    /** 模糊半径匹配静态快照层 alpha: radius = alpha * keyguard_blur_max * 4.
+     *  alpha=1 (全开, stock 静态层完整显示) 时动态层 (真窗口模糊) 归零隐藏,
+     *  避免与静态层叠加; 过渡期 (alpha<1) 按 alpha 同步桥接淡入淡出. */
     private static void applyShadeBlur(final Class<?> shadeCtrlCls, float alpha) {
         Object ctrl = sShadeCtrl.get();
         if (ctrl == null) {
@@ -515,14 +569,22 @@ public final class SystemUIHooks {
             if (shadeView == null) {
                 return;
             }
-            int max = 60;
-            Object ctx = XposedHelpers.getObjectField(ctrl, "mContext");
-            if (ctx instanceof android.content.Context) {
-                max = android.provider.Settings.Global.getInt(
-                        ((android.content.Context) ctx).getContentResolver(),
-                        "keyguard_blur_max", 60);
+            float radius;
+            if (alpha >= 0.999f) {
+                radius = 0f; // 全开: 静态层独占, 动态层隐藏
+            } else {
+                int max = 60;
+                Object ctx = XposedHelpers.getObjectField(ctrl, "mContext");
+                if (ctx instanceof android.content.Context) {
+                    max = android.provider.Settings.Global.getInt(
+                            ((android.content.Context) ctx).getContentResolver(),
+                            "keyguard_blur_max", 60);
+                }
+                radius = alpha * max * 4f;
             }
-            float radius = alpha * max * 4f;
+            int r = (int) radius;
+            sCurBlurRadius = r;
+            // 不做去重: surface 重建会静默清掉实际半径, 必须逐帧重放
             XposedHelpers.callMethod(ctrl, "applyWindowBlur", shadeView, radius);
             Port.log("shadeBlur a=" + alpha + " r=" + radius);
         } catch (Throwable t) {
@@ -578,10 +640,10 @@ public final class SystemUIHooks {
             for (int i = 0; i < n; i++) {
                 View c = list.get(i);
                 float w = c.getWidth();
-                if (bottomIdx.contains(i)) {
+                if (bottomIdx.contains(i) || xs[i] + w / 2f == midX) {
                     c.setPivotX(w / 2f);
                     c.setPivotY(0);
-                } else if (xs[i] + w / 2f <= midX) {
+                } else if (xs[i] + w / 2f < midX) {
                     c.setPivotX(w);
                     c.setPivotY(0f);
                 } else {
