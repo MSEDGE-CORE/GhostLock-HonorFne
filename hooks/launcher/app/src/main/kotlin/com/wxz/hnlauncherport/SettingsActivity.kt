@@ -325,6 +325,16 @@ private fun SettingsScreen() {
                             Port.KEY_KG_NO_TOOLBOX
                         ), true)
                     }
+                    SettingsSection("导航键") {
+                        SettingsSwitchItem(ToggleRow(
+                            "禁用手势提示条跟随", "禁用底部手势提示条跟手移动",
+                            Port.KEY_NAV_HANDLE_NO_FOLLOW
+                        ), true)
+                        SettingsSwitchItem(ToggleRow(
+                            "隐藏手势提示条", "隐藏手势提示条，保留底部抬升",
+                            Port.KEY_NAV_HANDLE_HIDE
+                        ), true)
+                    }
                     SettingsSection("杂项") {
                         SettingsSwitchItem(ToggleRow(
                             "固定AOD位置", "禁用AOD自动下移，可能导致烧屏",

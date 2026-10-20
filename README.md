@@ -46,8 +46,10 @@ GhostLock-HonorFne/
   - **连接方式：仅 USB**（WiFi/网络 adb 已移除）。
 - KSU 成功后自动安装的管理器物料（在本仓库 `deploy/`，脚本自动装，无需手动）：
   - `deploy/KernelSU-manager.apk`——KSU 管理器（已装则跳过）。
-  - `deploy/LSPosed-zygisk.zip` + `deploy/ZygiskNext.zip`——经 `/data/adb/modules` 自动部署
-    （主机解压读 module.prop 取 id 后推送，无条件覆盖同步）；LSPosed 管理器内嵌于模块，
+  - `deploy/LSPosed-zygisk.zip` + `deploy/ZygiskNext.zip`——zip 整包推 `/data/local/tmp`
+    中转、设备端 root 解压入 `/data/adb/modules`（adb 为 shell 用户直接 push `/data/adb`
+    必然 Permission denied；单次 push 亦远快于逐文件），无条件覆盖同步并清
+    `update`/`disable`/`remove` 标记；LSPosed 管理器内嵌于模块，
     激活后经通知栏快捷方式进入。
 
 ### per-boot root

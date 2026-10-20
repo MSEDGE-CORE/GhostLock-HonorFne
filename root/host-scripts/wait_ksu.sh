@@ -5,6 +5,8 @@
 # 退出码: 0 = KSU 已加载, 1 = 超时未加载。
 
 D=/data/local/tmp/ksu_fne
+T15=""; T30=""
+command -v timeout >/dev/null 2>&1 && { T15="timeout 15"; T30="timeout 30"; }
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -15,7 +17,7 @@ echo "等待 KSU 晚加载链完成（最长 180 秒，实时显示链日志）.
 
 poll() {
     # adb 可能因设备重启瞬时不可用：失败只返回空，不中断轮询
-    adb shell "grep -q kernelsu /proc/modules" >/dev/null 2>&1 && return 0
+    $T15 adb shell "grep -q kernelsu /proc/modules" >/dev/null 2>&1 && return 0
     return 1
 }
 
@@ -24,14 +26,14 @@ while [ $i -lt 36 ]; do
     if poll; then exit 0; fi
 
     # --- chain_status 变化提示 ---
-    st=$(adb shell "cat $D/chain_status 2>/dev/null" 2>/dev/null | tr -d '\r')
+    st=$($T15 adb shell "cat $D/chain_status 2>/dev/null" 2>/dev/null | tr -d '\r')
     if [ -n "$st" ] && [ "$st" != "$LAST_STATUS" ]; then
         echo "  [状态] $st"
         LAST_STATUS="$st"
     fi
 
     # --- chain.log 增量打印 ---
-    adb shell "cat $D/chain.log 2>/dev/null" 2>/dev/null | tr -d '\r' > "$TMP/chain.log"
+    $T15 adb shell "cat $D/chain.log 2>/dev/null" 2>/dev/null | tr -d '\r' > "$TMP/chain.log"
     if [ -f "$TMP/chain.log" ]; then
         total=$(wc -l < "$TMP/chain.log")
         if [ "$total" -gt "$LAST_LINES" ]; then
@@ -49,8 +51,8 @@ poll && exit 0
 
 echo "  --------------------------------------------"
 echo "  [超时] KSU 未加载。chain.log 末尾 30 行:"
-adb shell "tail -n 30 $D/chain.log 2>/dev/null" 2>/dev/null | tr -d '\r' | sed 's/^/  [chain] /'
-kcap=$(adb shell "tail -n 15 $D/kmsg_cap.txt 2>/dev/null" 2>/dev/null | tr -d '\r')
+$T30 adb shell "tail -n 30 $D/chain.log 2>/dev/null" 2>/dev/null | tr -d '\r' | sed 's/^/  [chain] /'
+kcap=$($T30 adb shell "tail -n 15 $D/kmsg_cap.txt 2>/dev/null" 2>/dev/null | tr -d '\r')
 if [ -n "$kcap" ]; then
     echo "  [内核] kmsg_cap.txt 末尾 15 行:"
     echo "$kcap" | sed 's/^/  [kmsg] /'
