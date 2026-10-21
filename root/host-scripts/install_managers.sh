@@ -99,5 +99,21 @@ install_mod() { # $1=zip
 echo "      安装 KSU 模块（ZygiskNext / LSPosed，官方安装流程）..."
 install_mod "$DEPLOY/ZygiskNext.zip"
 install_mod "$DEPLOY/LSPosed-zygisk.zip"
+
+# --- 3. 安装后重打 netfix RRO 补丁 ---
+# 模块安装会把 zygisk_lsposed/daemon 重置为未打补丁版本(内含
+# `mount tmpfs /data/resource-cache`, 会把全部 RRO idmap 遮成
+# STATE_NO_IDMAP → 状态栏/导航栏布局回退 base 资源)。
+# netfix_packet 的补丁只在 ksud 开机阶段运行(早于本脚本), 故每次
+# 安装后必须原地重打补丁 + 清理已叠层 + 拉起 idmap2d, 否则本轮
+# grind 的 RRO 必坏(grind_reboot7 实测 57 层 tmpfs 叠挂)。
+NF=/data/adb/modules/netfix_packet
+if $T30 adb shell "su 0 test -f $NF/post-fs-data.sh" >/dev/null 2>&1; then
+    $T30 adb shell "su 0 sh -c 'sh $NF/post-fs-data.sh; sh $NF/service.sh'" >/dev/null 2>&1 \
+        && echo "      已重打 netfix 补丁（LSPosed daemon tmpfs / RRO idmap 修复）" \
+        || echo "      [警告] netfix 补丁重打失败，状态栏布局可能异常"
+else
+    echo "      [提示] 未找到 $NF/post-fs-data.sh，跳过 netfix 补丁重打"
+fi
 echo "      提示: 模块随下次 KSU 加载（下轮 grind）自动挂载生效；"
 echo "            LSPosed 管理器入口为模块激活后通知栏快捷方式（无桌面图标）。"
