@@ -102,6 +102,15 @@ import de.robv.android.xposed.XposedHelpers;
  *     hits the floor at roughly half the portrait travel. The portrait
  *     formula is byte-identical.
  *
+ *  8. keepX gating (v7.9, 方案 B): the v8 chained-quick-switch X latch
+ *     (0.08w center-offset heuristic) misfired on ANY interrupted
+ *     mid-flight animation with a horizontal offset - interrupting a
+ *     launch/settle animation froze the card's X at the grab position
+ *     for the whole gesture ("打断动画触摸 X 停止"). Now keepX latches
+ *     only when the PREVIOUS gesture (snapshotted at ACTION_DOWN)
+ *     ended with NEW_TASK (horizontal quick-switch settle in flight);
+ *     every other interrupt decays X with the same kg as Y.
+ *
  * Trajectory (reference-faithful, F = FarPoint = 0.2, raw-finger driven):
  *   dy = fingerY - downY; mY = H + dy
  *   mH = (mY - F*H) * (H / (H - F*H))
@@ -178,6 +187,8 @@ public final class WindowFollowScale {
     private static volatile int sTrajRot;
     /** Release endTarget was RECENTS (enter recents): skip our release blend. */
     private static volatile boolean sEndRecents;
+    /** Release endTarget was NEW_TASK (horizontal quick-switch in flight). */
+    private static volatile boolean sEndNewTask;
     /** Release endTarget was NEW_TASK/LAST_TASK (quick-switch or back to
      *  fullscreen app): use the stock settle (same as when 跟手 is off). */
     private static volatile boolean sEndTask;
@@ -204,6 +215,10 @@ public final class WindowFollowScale {
     /** Mid quick-switch: keep the captured horizontal CENTER offset for the
      *  whole gesture (stock keeps the card's X offset; only Y/scale follow). */
     private static boolean sAncKeepX;
+    /** 上一手势 (ACTION_DOWN 快照) 以 NEW_TASK 收尾: 链式横向 quick-switch
+     *  在途 — keepX 仅在该场景锁存 (方案 B); 打断启动/回位/RECENTS settle
+     *  时 X 与 Y 一起按 kg 衰减跟手, 不再冻结 ("打断动画触摸 X 停止" 修复). */
+    private static boolean sPrevQuickSwitch;
     /** Reference height at the keepX capture: the persisted X offset scales
      *  with the main card (r.height()/sAncKeepXH as the card shrinks/grows). */
     private static float sAncKeepXH;
@@ -280,6 +295,10 @@ public final class WindowFollowScale {
                         int action = ev.getActionMasked();
                         if (action == MotionEvent.ACTION_DOWN) {
                             sFingerDown = true;
+                            // 方案 B: 快照上一手势的收尾, 再复位 — keepX 仅在
+                            // 上一手势以 NEW_TASK (横向 quick-switch) 收尾、
+                            // settle 在途时允许锁存.
+                            sPrevQuickSwitch = sEndSet && sEndNewTask;
                             resetGestureState();
                             // New touch ends the previous release handoff: a
                             // new finger is a new gesture (chained quick-switch).
@@ -288,6 +307,7 @@ public final class WindowFollowScale {
                             sRelDesValid = false;
                             sEndRecents = false;
                             sEndTask = false;
+                            sEndNewTask = false;
                             sTaskOffValid = false;
                             // DOWN arrives BEFORE the consumer updates
                             // mDownPos/mLastPos: reading them now yields the
@@ -690,17 +710,22 @@ public final class WindowFollowScale {
                         sAncValid = true;
                         sAncTime = now;
                         sAncGrab = rtTakeover;
-                        // Quick-switch recognition (v8): a fresh swipe-up
-                        // starts with the window horizontally centered on
-                        // our reference; touching the swipe-up area mid
-                        // horizontal-switch (chained quick-switch) starts
-                        // with the card offset in X (carousel slot / settle
-                        // in flight). Stock keeps that X offset while the
-                        // finger drives Y/scale - so must we: the captured
+                        // Quick-switch recognition (v8 + 方案 B): a fresh
+                        // swipe-up starts with the window horizontally
+                        // centered on our reference; touching the swipe-up
+                        // area mid horizontal-switch (chained quick-switch)
+                        // starts with the card offset in X (carousel slot /
+                        // settle in flight). Stock keeps that X offset while
+                        // the finger drives Y/scale - so must we: the captured
                         // CENTER-X offset persists for the whole gesture,
                         // only Y/scale blend toward the trajectory.
-                        sAncKeepX = Math.abs(curS.centerX() - r.centerX())
-                                > (float) w * 0.08f;
+                        // 方案 B: keepX 仅在上一手势以 NEW_TASK 收尾 (横向
+                        // quick-switch settle 在途) 时锁存 — 打断启动/回位/
+                        // RECENTS 动画时旧 0.08w 启发式误把 X 冻在动画位置
+                        // ("打断动画触摸 X 停止"); 现在 X 随 Y 一起 kg 衰减.
+                        sAncKeepX = sPrevQuickSwitch
+                                && Math.abs(curS.centerX() - r.centerX())
+                                        > (float) w * 0.08f;
                         sAncKeepXH = r.height() > 1f ? r.height() : 1f;
                         // v9: unified grab-style capture for BOTH paths -
                         // the non-grab anchor uses the same sigma/center
@@ -1165,6 +1190,7 @@ public final class WindowFollowScale {
                         sRelDesValid = false;
                         sEndRecents = false;
                         sEndTask = false;
+                        sEndNewTask = false;
                         sTaskOffValid = false;
                         resetAnchor();
                     }
@@ -1173,7 +1199,8 @@ public final class WindowFollowScale {
                 sEndTime = now;
                 String et = endTarget.toString();
                 sEndRecents = "RECENTS".equals(et);
-                sEndTask = "NEW_TASK".equals(et) || "LAST_TASK".equals(et);
+                sEndNewTask = "NEW_TASK".equals(et);
+                sEndTask = sEndNewTask || "LAST_TASK".equals(et);
                 sTaskOffValid = false;
                 sRelDes.set(sLastDes);
                 sRelDesValid = sLastDesValid && !sLastDes.isEmpty();
