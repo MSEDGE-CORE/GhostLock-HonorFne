@@ -73,7 +73,17 @@ for try in 1 2 3 4 5 6 7 8; do
     echo "--- [W1] 关闭 SELinux (--write1), 最长 420s, TRY $try ---"
     run_to 420 "w1_try$try.log" adb shell "env $SYNC $E --write1"
     echo "w1 rc=$? : $(grep -E 'SELinux DISABLED|Write 1 failed' w1_try$try.log | tail -1)"
-    en=$($T30 adb shell getenforce 2>/dev/null | tr -d '\r')
+    # W1 打出 DISABLED 后 adbd/USB 常瞬断, 单次 getenforce 空响应会把
+    # 成功误判为失败白白重启(grind_reboot3 实测 10+ try 多次踩中);
+    # 改为最多 6 次重试, 仅确认非 Permissive 才判失败。
+    gi=0
+    while [ $gi -lt 6 ]; do
+      en=$($T30 adb shell getenforce 2>/dev/null | tr -d '\r')
+      [ "$en" = "Permissive" ] && break
+      [ -n "$en" ] && break
+      gi=$((gi+1))
+      sleep 10
+    done
   fi
   if [ "$en" != "Permissive" ]; then
     echo "TRY $try: W1 failed (getenforce=$en) - reboot"
