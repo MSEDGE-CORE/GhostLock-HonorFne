@@ -327,7 +327,7 @@ private fun SettingsScreen() {
                     }
                     SettingsSection("悬浮窗") {
                         SettingsSwitchItem(ToggleRow(
-                            "手势优化", "挂起手势，最小化手势判定逻辑",
+                            "手势优化", "小窗角落内滑挂起，贴边最小化",
                             Port.KEY_FF_GESTURE
                         ), true)
                         SettingsSwitchItem(ToggleRow(

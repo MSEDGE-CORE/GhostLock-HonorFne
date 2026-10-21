@@ -16,6 +16,7 @@ import com.wxz.hnlauncherport.Port;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.WeakHashMap;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -25,32 +26,41 @@ import de.robv.android.xposed.XposedHelpers;
  * 悬浮窗 (hnfreeform) 手势与动效优化, 运行于 SystemUI 进程 (wm.shell):
  *
  * KEY_FF_GESTURE (悬浮窗手势优化):
- *  (G1) 屏幕底部上滑 (launcher home 手势): 原生会走 HnFreeformController
- *       .onTaskInfoChanged 可见性分支 -> operateFloatBall("add") 进圆球.
- *       拦截后改为 transformToMiniWindow(8, task, 2=右上角) 挂起小窗.
- *       小窗自身底部上滑 (flingUpFreeformToBack) 保持原样.
- *  (G2) 横滑判定修复: VM 的 mFlingGestureDetector 内部 mCurrentDownEvent
- *       残留 (DOWN 被抢走时), onFling 用旧 DOWN 算距离 -> 方向判反/两次
- *       滑动合并. 在 DOWN 时 cleanFlingParmars + 给 detector 重新喂 DOWN.
- *  (G4) 角落缩放甩动挂角: 左下(ctrlType 9)/右下(10)角缩放松手时, 若窗口
- *       正在缩小 (mCurScale<1) 且速度达底部上滑响应阈值 (acc>1000px/s),
- *       直接挂到对角 (9->右上, 10->左上).
+ *  (G2) 横滑判定残留: DOWN 时 cleanFlingParmars + 给 detector 重新喂 DOWN.
+ *  (G3) 拖窗贴边最小化 (替换原生速度判定): 标题栏/顶栏拖动松手时, 窗口中心 X
+ *       距屏幕边 < 1/5 屏宽 -> 最小化(0=左/1=右). 原生 |vx|>1500 速度判定
+ *       (isFlingToBall) 被禁用, 无贴边命中恒 -1, 速度残留判反 bug 由此根治;
+ *       松手真实速度写入 VM 字段, 供 onTaskMinimized 传给圆球.
+ *       判定挂在 CaptionTouchEventListener.onTouch (外层, 必收到全部事件),
+ *       而非 handleMotionEvent (部分路径被 MultiWindowGestureDetector 抢走).
+ *  (G4) 角落缩放甩动挂角: 左下(9)/右下(10)角缩放松手, 窗口正在缩小且速度
+ *       >=1000px/s -> 直接挂到对角.
+ *  (G5) 底边快速上滑: 已进入橙色(最小缩放)状态时拦截关闭(reason=2),
+ *       改走 onDragPositioningToMiniwindow 挂起为小窗.
+ *  (G6) 挂起小窗左右角判定: 窗口中心 X < 屏宽 1/3 -> 左上, 其余 -> 右上
+ *       (stock: 屏宽 1/2 对半分).
  *
  * KEY_FF_ANIM (悬浮窗动效优化):
- *  (A1) 拖拽结束 (End/Cancel/ToMiniwindow) 快照 live bounds + live scale
- *       (mCurScale*mInitialScale), 供结束动画起播使用, 消除松手回跳.
- *  (A2) moveToMiniform 的 startRect 取的是更新前拷贝, 换成 live 的
- *       mRepositionTaskBounds.
+ *  (A1) 拖拽结束快照 live bounds + live scale (mCurScale*mInitialScale).
+ *  (A2) moveToMiniform 的 startRect 换 live 的 mRepositionTaskBounds.
  *  (A3) startBoundsAnimator 的 startScale 用 live 快照覆盖.
- *  (A4) 挂起小窗结束动画 interpolator: OvershootInterpolator(1.0) 换成
- *       SpringInterpolator(stiffness=800, damping=50.35, endPos=1, v0=投影
- *       初速度), 时长保持 stock 300ms. ζ = 50.35/(2*sqrt(800)) ≈ 0.89.
- *  (A5) 全屏过渡连贯: setupLeashStartState 处按 S = L/(0.7r+0.3) 设置
- *       change.lastFreeformScale, 使起播净缩放 = live 视觉缩放 L;
- *       无 freeformAnimationLeash 时 (adapter 直接覆盖 matrix, 末态=1/S)
- *       不改写, 避免"末态过大".
+ *  (A4) 挂起小窗结束动画: OvershootInterpolator 换 SpringInterpolator
+ *       (stiffness=800, damping=50.35, ζ≈0.89, v0=投影初速度), 时长换
+ *       spring 自然时长 (getDuration), 否则 300ms 内 spring 不可见.
+ *  (A5) 全屏过渡连贯: hook FreeformAnimationRunner.createChangeAnimationAdapters
+ *       before (早于 line314 的 f 读取与 line327 的 setupLeashStartState,
+ *       保证 f 与 leash 预缩放一致). mode==6 且 pre==5->win==1 的 change:
+ *       有 animLeash: setStartAbsBounds(liveRect) + S=L/(0.7r+0.3), 起播净
+ *       缩放=live 视觉缩放, 末态 S*(1/S)=1;
+ *       无 animLeash (adapter 每帧覆盖 matrix, start=fWidth, end=1/S):
+ *       必须 S=1 (末态=1), 合成 startAbsBounds 宽高比 r'=(L-0.3)/0.7 且位置
+ *       =liveRect 左上 (start=L 连贯). stock 无 animLeash 时 S<1 -> 末帧 1/S>1
+ *       = 原生"末态过大".
  *  (A6) 最小化进圆球动画 (startFreeformToBackAnimator, 200ms 默认插值器)
- *       换 spring + 上滑初速度.
+ *       换 spring + 上滑初速度, 时长换 spring 自然时长.
+ *  (A7) 贴边最小化过渡 (minimizeTask -> FreeformAnimationRunner):
+ *       getChangeAnimInterPolater 返回的 stock spring(206/27/v0=0) 换
+ *       spring(800/50.35/v0=贴边松手速度), 时长取 spring 自然时长.
  */
 public final class FreeformFx {
 
@@ -70,8 +80,8 @@ public final class FreeformFx {
             "com.android.wm.shell.windowdecor.CaptionWindowDecorViewModel$CaptionTouchEventListener";
     private static final String FLING_GD_CLS =
             "com.android.wm.shell.windowdecor.DragResizeInputListener$TaskResizeInputEventReceiver$FlingGestureDetector";
-    private static final String FF_ANIM_CLS =
-            "com.android.wm.shell.transition.HnFreeformAnimation";
+    private static final String FF_RUNNER_CLS =
+            "com.android.wm.shell.freeform.FreeformAnimationRunner";
     private static final String SPRING_CLS =
             "com.hihonor.dynamicanimation.interpolator.SpringInterpolator";
 
@@ -93,19 +103,22 @@ public final class FreeformFx {
 
     private static final Map<Integer, Live> sLive = new HashMap<>();
     private static final Map<Integer, float[]> sVel = new HashMap<>();
-    /** 最近已重定向挂起的 task (防 home 动画期间重复触发) */
-    private static final Map<Integer, Long> sRecent = new HashMap<>();
+    /** caption listener -> {downRawX, lastRawX, lastEventTimeMs} (贴边判定/速度用) */
+    private static final WeakHashMap<Object, float[]> sTrack = new WeakHashMap<>();
+    /** 贴边命中方向 (onTouch UP -> isFlingToBall 同线程传递) */
+    private static final ThreadLocal<Integer> sEdgeDir = new ThreadLocal<>();
+    /** 贴边最小化 spring 初速度 {v0progress, atMs} (跨线程) */
+    private static volatile float[] sMinimizeVel;
     /** startBoundsAnimator -> ValueAnimator.setInterpolator 同线程标记 */
     private static final ThreadLocal<Boolean> sSpringMarker = new ThreadLocal<>();
     private static final ThreadLocal<Float> sPendingV0 = new ThreadLocal<>();
     /** startFreeformToBackAnimator -> ValueAnimator.setDuration 同线程标记 */
     private static final ThreadLocal<Boolean> sBallMarker = new ThreadLocal<>();
     private static final ThreadLocal<Float> sBallV0 = new ThreadLocal<>();
-    /** 同一次 onTaskInfoChanged 调用内传递 hnInfo (before->after) */
-    private static final ThreadLocal<Object> sHnInfoExtra = new ThreadLocal<>();
     /** 角落甩动已自行 stash 标记 (corner hook -> A1 stash hook) */
     private static final ThreadLocal<Boolean> sCornerExtra = new ThreadLocal<>();
     private static ClassLoader sCl;
+    private static volatile boolean sPreFieldMissing;
 
     public static void install(ClassLoader cl) {
         sCl = cl;
@@ -159,99 +172,6 @@ public final class FreeformFx {
     // ------------------------------------------------------------------
 
     private static void installGesture(ClassLoader cl) {
-        final Class<?> ffCtrl = XposedHelpers.findClass(FF_CTRL_CLS, cl);
-
-        // (G1) 屏幕 bottom home 上滑: 可见性分支 (进圆球) 重定向为右上角挂起
-        XposedHelpers.findAndHookMethod(ffCtrl, "onTaskInfoChanged",
-                XposedHelpers.findClass("android.app.ActivityManager$RunningTaskInfo", cl),
-                XposedHelpers.findClass(
-                        "com.android.wm.shell.hnfreeform.HnRunningFreeformTaskInfo$Changes", cl),
-                XposedHelpers.findClass("android.view.SurfaceControl", cl),
-                new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                if (!Port.on(Port.KEY_FF_GESTURE)) {
-                    return;
-                }
-                try {
-                    Object info = param.args[0];
-                    if (info == null) {
-                        return;
-                    }
-                    boolean visReq = XposedHelpers.getBooleanField(info, "isVisibleRequested");
-                    boolean visible = XposedHelpers.getBooleanField(info, "isVisible");
-                    if (visReq || visible) {
-                        return;
-                    }
-                    Object ctrl = param.thisObject;
-                    int taskId = XposedHelpers.getIntField(info, "taskId");
-                    synchronized (sRecent) {
-                        Long at = sRecent.get(taskId);
-                        if (at != null
-                                && SystemClock.uptimeMillis() - at < 1500L) {
-                            return;
-                        }
-                    }
-                    Object hnInfo = XposedHelpers.callMethod(ctrl,
-                            "getFreeformTaskInfo", taskId);
-                    if (hnInfo == null) {
-                        return;
-                    }
-                    if (Boolean.TRUE.equals(XposedHelpers.callMethod(hnInfo,
-                            "isFreeformToRecentTriggered"))) {
-                        return;
-                    }
-                    if (!(Boolean) XposedHelpers.callMethod(ctrl, "isMiniWindowEnable")) {
-                        return;
-                    }
-                    Object mini = XposedHelpers.callMethod(ctrl, "getMiniformController");
-                    // 复刻 stock 分支其余 guard, guard 不满足时不重定向
-                    if (Boolean.TRUE.equals(XposedHelpers.callStaticMethod(
-                            XposedHelpers.findClass(FF_UTILS_CLS, sCl),
-                            "isExcludeFromRecents", info))) {
-                        return;
-                    }
-                    if (Boolean.TRUE.equals(XposedHelpers.callMethod(mini,
-                            "isDeleting", taskId))) {
-                        return;
-                    }
-                    if (Boolean.TRUE.equals(XposedHelpers.callMethod(ctrl,
-                            "oprateFloatballAppOptOut", info))) {
-                        return;
-                    }
-                    // 抑制进圆球: 分支 guard 会因 flag=true 跳过 operateFloatBall
-                    XposedHelpers.callMethod(hnInfo, "setFreeformToRecentTriggered", true);
-                    sHnInfoExtra.set(hnInfo);
-                    // 挂起到右上角
-                    Object helper = XposedHelpers.callMethod(mini, "getMiniformMotionHelper");
-                    XposedHelpers.callMethod(helper, "endProcess", taskId);
-                    Rect bounds = (Rect) XposedHelpers.callMethod(info, "getBounds");
-                    Rect start = bounds != null ? new Rect(bounds) : null;
-                    XposedHelpers.callMethod(mini, "transformToMiniWindow",
-                            8, taskId, 2, start, (Bundle) null, (Point) null);
-                    synchronized (sRecent) {
-                        sRecent.put(taskId, SystemClock.uptimeMillis());
-                    }
-                    Port.log("FreeformFx: home-swipe -> miniform task=" + taskId);
-                } catch (Throwable t) {
-                    Port.log("FreeformFx: home-swipe redirect failed", t);
-                }
-            }
-
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                Object hnInfo = sHnInfoExtra.get();
-                sHnInfoExtra.set(null);
-                if (hnInfo != null) {
-                    try {
-                        XposedHelpers.callMethod(hnInfo, "setFreeformToRecentTriggered", false);
-                    } catch (Throwable t) {
-                        Port.log("FreeformFx: recent-flag reset failed", t);
-                    }
-                }
-            }
-        });
-
         final Class<?> pos = XposedHelpers.findClass(FLUID_POS_CLS, cl);
 
         // (G4) 角落缩放甩动挂角: onDragPositioningEnd 前拦截
@@ -315,8 +235,109 @@ public final class FreeformFx {
             }
         });
 
-        // (G2a) 标题栏 touch DOWN: 清残留 + 给 detector 喂新 DOWN
+        // (G5) 底边上滑: 已进入橙色(最小缩放)状态后松手, 无论速率一律挂起为小窗
+        // (stock: isFlingBottomZone 速率达标 -> onDragPositioningCancel(2) 关闭)
+        XposedHelpers.findAndHookMethod(pos, "onDragPositioningCancel",
+                float.class, float.class, int.class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                if (!Port.on(Port.KEY_FF_GESTURE)) {
+                    return;
+                }
+                if (((Integer) param.args[2]).intValue() != 2) {
+                    return; // 仅快速上滑关闭路径
+                }
+                try {
+                    float cur = XposedHelpers.getFloatField(param.thisObject, "mCurScale");
+                    float init = XposedHelpers.getFloatField(param.thisObject, "mInitialScale");
+                    float mini = XposedHelpers.getFloatField(param.thisObject, "mMiniWindowScale");
+                    if (cur * init - mini >= 0.01f) {
+                        return; // 未达橙色状态, 保留原生快速上滑关闭行为
+                    }
+                    Object r = XposedHelpers.callMethod(param.thisObject,
+                            "onDragPositioningToMiniwindow", Boolean.TRUE);
+                    if (Boolean.TRUE.equals(r)) {
+                        param.setResult(null); // 跳过关闭
+                        Port.log("FreeformFx: bottom fling orange -> miniform task="
+                                + positionerTaskId(param.thisObject));
+                    }
+                } catch (Throwable t) {
+                    Port.log("FreeformFx: bottom orange override failed", t);
+                }
+            }
+        });
+
+        // (G6) 挂起小窗左右角判定: 窗口中心 X < 屏宽 1/3 -> 左上(1), 其余 -> 右上(2)
+        // (stock: 屏宽 1/2 对半分). 复刻 stock onDragPositioningToMiniwindow 主体,
+        // 同时覆盖慢速上滑路径 (DragResizeInputListener) 与 G5 的重定向.
+        final Class<?> ffUtils = XposedHelpers.findClass(FF_UTILS_CLS, cl);
+        XposedHelpers.findAndHookMethod(pos, "onDragPositioningToMiniwindow",
+                boolean.class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                if (!Port.on(Port.KEY_FF_GESTURE)) {
+                    return;
+                }
+                if (!Boolean.TRUE.equals(param.args[0])) {
+                    return;
+                }
+                try {
+                    Object positioner = param.thisObject;
+                    if (XposedHelpers.getIntField(positioner, "mCtrlType") != 8) {
+                        return;
+                    }
+                    float cur = XposedHelpers.getFloatField(positioner, "mCurScale");
+                    float init = XposedHelpers.getFloatField(positioner, "mInitialScale");
+                    float mini = XposedHelpers.getFloatField(positioner, "mMiniWindowScale");
+                    if (cur * init - mini >= 0.01f) {
+                        return; // 未达橙色, 交回 stock (return false)
+                    }
+                    Object optional = XposedHelpers.getObjectField(
+                            positioner, "mHnFreeformControllerOptional");
+                    Object ctrl0 = XposedHelpers.callMethod(optional, "get");
+                    if (!Boolean.TRUE.equals(
+                            XposedHelpers.callMethod(ctrl0, "isMiniWindowEnable"))) {
+                        return;
+                    }
+                    Object miniCtrl = XposedHelpers.callMethod(ctrl0, "getMiniformController");
+                    Object decor = XposedHelpers.getObjectField(positioner, "mWindowDecoration");
+                    XposedHelpers.callMethod(decor, "setFrameThicknessColor", 1);
+                    Rect curBounds = (Rect) XposedHelpers.getObjectField(
+                            positioner, "mCurrentBounds");
+                    int centerX = (curBounds.left + curBounds.right) / 2;
+                    Object dctx = XposedHelpers.getObjectField(decor, "mContext");
+                    int dw = ((Integer) XposedHelpers.callStaticMethod(
+                            ffUtils, "getDisplayWidth", dctx)).intValue();
+                    int loc = centerX < dw / 3 ? 1 : 2; // 1/3 左上, 其余右上
+                    int taskId = positionerTaskId(positioner);
+                    XposedHelpers.callMethod(miniCtrl, "transformToMiniWindow",
+                            8, taskId, loc,
+                            new Rect((Rect) XposedHelpers.getObjectField(
+                                    positioner, "mTaskBoundsAtDragEnd")),
+                            (Bundle) null, (Point) null);
+                    XposedHelpers.callMethod(XposedHelpers.getObjectField(
+                            positioner, "mTaskBoundsAtDragStart"), "setEmpty");
+                    XposedHelpers.callMethod(XposedHelpers.getObjectField(
+                            positioner, "mRepositionStartPoint"), "set", 0f, 0f);
+                    XposedHelpers.setIntField(positioner, "mCtrlType", 0);
+                    XposedHelpers.setBooleanField(positioner, "mHasDragResized", false);
+                    XposedHelpers.setBooleanField(positioner, "mIsMaxDragStart", false);
+                    XposedHelpers.callMethod(XposedHelpers.callMethod(
+                            miniCtrl, "getMiniformMotionHelper"), "endProcess", taskId);
+                    param.setResult(Boolean.TRUE);
+                    Port.log("FreeformFx: to miniform loc=" + loc
+                            + " centerX=" + centerX + " dw=" + dw + " task=" + taskId);
+                } catch (Throwable t) {
+                    Port.log("FreeformFx: to miniform override failed", t);
+                }
+            }
+        });
+
         final Class<?> capListener = XposedHelpers.findClass(CAPTION_LISTENER_CLS, cl);
+
+        // (G2a/G3) 标题栏 touch: DOWN 清残留+跟踪, MOVE 跟踪, UP 贴边判定.
+        // 挂在 onTouch (外层) 而非 handleMotionEvent —— 后者在部分路径被
+        // MultiWindowGestureDetector 抢走收不到事件.
         XposedHelpers.findAndHookMethod(capListener, "onTouch", View.class, MotionEvent.class,
                 new XC_MethodHook() {
             @Override
@@ -325,14 +346,35 @@ public final class FreeformFx {
                     return;
                 }
                 MotionEvent ev = (MotionEvent) param.args[1];
-                if (ev == null || ev.getActionMasked() != MotionEvent.ACTION_DOWN) {
+                if (ev == null) {
                     return;
                 }
-                resetCaptionFlingState(param.thisObject, ev);
+                int action = ev.getActionMasked();
+                if (action == MotionEvent.ACTION_DOWN) {
+                    resetCaptionFlingState(param.thisObject, ev);
+                    trackTouch(param.thisObject, ev.getRawX(), ev.getRawX(),
+                            ev.getEventTime());
+                    sEdgeDir.set(null);
+                } else if (action == MotionEvent.ACTION_MOVE) {
+                    trackTouch(param.thisObject, -1f, ev.getRawX(), ev.getEventTime());
+                } else if (action == MotionEvent.ACTION_UP) {
+                    try {
+                        handleEdgeMinimize(param.thisObject, ev);
+                    } catch (Throwable t) {
+                        Port.log("FreeformFx: edge minimize failed", t);
+                    }
+                    synchronized (sTrack) {
+                        sTrack.remove(param.thisObject);
+                    }
+                } else if (action == MotionEvent.ACTION_CANCEL) {
+                    synchronized (sTrack) {
+                        sTrack.remove(param.thisObject);
+                    }
+                }
             }
         });
 
-        // (G2b) handleMotionEvent DOWN 同样兜底 (DragDetector 路径)
+        // (G2b) handleMotionEvent DOWN 兜底 (DragDetector 路径)
         XposedHelpers.findAndHookMethod(capListener, "handleMotionEvent", MotionEvent.class,
                 new XC_MethodHook() {
             @Override
@@ -345,6 +387,22 @@ public final class FreeformFx {
                     return;
                 }
                 resetCaptionFlingState(param.thisObject, ev);
+            }
+        });
+
+        // (G3) 贴边判定替换速度判定: 贴边命中返回方向, 否则恒 -1 (禁用原生甩动)
+        final Class<?> capVm = XposedHelpers.findClass(CAPTION_VM_CLS, cl);
+        XposedHelpers.findAndHookMethod(capVm, "isFlingToBall",
+                XposedHelpers.findClass("android.app.ActivityManager$RunningTaskInfo", cl),
+                new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                if (!Port.on(Port.KEY_FF_GESTURE)) {
+                    return;
+                }
+                Integer edge = sEdgeDir.get();
+                sEdgeDir.set(null);
+                param.setResult(edge != null ? edge : Integer.valueOf(-1));
             }
         });
     }
@@ -361,6 +419,91 @@ public final class FreeformFx {
         } catch (Throwable t) {
             Port.log("FreeformFx: caption fling reset failed", t);
         }
+    }
+
+    /** downX<0 表示仅更新 last 值 (MOVE), 否则整体重置 (DOWN) */
+    private static void trackTouch(Object listener, float downX, float x, long t) {
+        synchronized (sTrack) {
+            if (downX >= 0f) {
+                sTrack.put(listener, new float[]{downX, x, t});
+            } else {
+                float[] cur = sTrack.get(listener);
+                if (cur != null) {
+                    cur[1] = x;
+                    cur[2] = t;
+                }
+            }
+        }
+    }
+
+    /**
+     * (G3) 标题栏拖动松手贴边判定: 窗口宽 8.5/20 越出屏幕边 -> 最小化.
+     * 命中时写入真实松手速度 (供 onTaskMinimized 传圆球) + sEdgeDir (供
+     * isFlingToBall hook) + sMinimizeVel (供 A7 spring 初速度).
+     */
+    private static void handleEdgeMinimize(Object listener, MotionEvent ev) {
+        float[] track;
+        synchronized (sTrack) {
+            track = sTrack.get(listener);
+        }
+        if (track == null) {
+            return;
+        }
+        Object vm = XposedHelpers.getObjectField(listener, "this$0");
+        int taskId = XposedHelpers.getIntField(listener, "mTaskId");
+        Object organizer = XposedHelpers.getObjectField(vm, "mTaskOrganizer");
+        Object rt = XposedHelpers.callMethod(organizer, "getRunningTaskInfo", taskId);
+        if (rt == null) {
+            return;
+        }
+        if ((Integer) XposedHelpers.callMethod(rt, "getWindowingMode") == 1) {
+            return;
+        }
+        Object ffCtrl = XposedHelpers.getObjectField(vm, "mHnFreeformController");
+        if (ffCtrl != null && Boolean.TRUE.equals(XposedHelpers.callMethod(
+                XposedHelpers.callMethod(ffCtrl, "getMiniformController"),
+                "isMiniWindow", taskId))) {
+            return;
+        }
+        Object cfg = XposedHelpers.getObjectField(rt, "configuration");
+        Object wc = XposedHelpers.getObjectField(cfg, "windowConfiguration");
+        Rect taskBounds = (Rect) XposedHelpers.callMethod(wc, "getBounds");
+        Rect maxBounds = (Rect) XposedHelpers.callMethod(wc, "getMaxBounds");
+        if (taskBounds == null || taskBounds.isEmpty()
+                || maxBounds == null || maxBounds.isEmpty()) {
+            return;
+        }
+        float dx = ev.getRawX() - track[0];
+        float liveLeft = taskBounds.left + dx;
+        float liveRight = taskBounds.right + dx;
+        // 越出屏幕的部分 >= 窗口宽 8.5/20 -> 贴边
+        float offThreshold = taskBounds.width() * 8.5f / 20f;
+        int dir = maxBounds.left - liveLeft >= offThreshold ? 0
+                : liveRight - maxBounds.right >= offThreshold ? 1 : -1;
+        if (dir < 0) {
+            return;
+        }
+        // 真实松手速度: 最后 <=250ms 内的位移, 超时视为 0
+        float vx = 0f;
+        long dt = ev.getEventTime() - (long) track[2];
+        if (dt > 0 && dt <= 250L) {
+            vx = (ev.getRawX() - track[1]) * 1000f / dt;
+        }
+        XposedHelpers.setFloatField(vm, "mVelocityX", vx);
+        XposedHelpers.setFloatField(vm, "mVelocityY", 0f);
+        XposedHelpers.setFloatField(vm, "mMoveXDistance", dir == 0 ? -50f : 50f);
+        setLongFieldReflect(vm, "mDeltaTime", 100L);
+        XposedHelpers.setBooleanField(listener, "mIsCtrlTopBar", true);
+        sEdgeDir.set(Integer.valueOf(dir));
+        float v0 = (dir == 0 ? -vx : vx) / (maxBounds.width() * 0.4f);
+        if (v0 < 0f) {
+            v0 = 0f;
+        } else if (v0 > 8f) {
+            v0 = 8f;
+        }
+        sMinimizeVel = new float[]{v0, SystemClock.uptimeMillis()};
+        Port.log("FreeformFx: edge minimize dir=" + (dir == 0 ? "left" : "right")
+                + " vx=" + (int) vx + " v0=" + v0 + " task=" + taskId);
     }
 
     // ------------------------------------------------------------------
@@ -499,9 +642,15 @@ public final class FreeformFx {
                     float v0 = v0Boxed != null ? v0Boxed.floatValue() : 0f;
                     sPendingV0.set(null);
                     Class<?> springCls = XposedHelpers.findClass(SPRING_CLS, sCl);
-                    param.args[0] = XposedHelpers.newInstance(
+                    Object spring = XposedHelpers.newInstance(
                             springCls, 800f, 50.35f, 1.0f, v0);
-                    Port.log("FreeformFx: miniform spring v0=" + v0);
+                    param.args[0] = spring;
+                    // 300ms 内 spring 不可见, 时长换 spring 自然时长
+                    long dur = springDuration(spring);
+                    if (dur > 0) {
+                        ((ValueAnimator) param.thisObject).setDuration(dur);
+                    }
+                    Port.log("FreeformFx: miniform spring v0=" + v0 + " dur=" + dur);
                 } catch (Throwable t) {
                     Port.log("FreeformFx: spring replace failed", t);
                 }
@@ -551,24 +700,53 @@ public final class FreeformFx {
                     float v0 = v0Boxed != null ? v0Boxed.floatValue() : 0f;
                     sBallV0.set(null);
                     Class<?> springCls = XposedHelpers.findClass(SPRING_CLS, sCl);
+                    Object spring = XposedHelpers.newInstance(
+                            springCls, 800f, 50.35f, 1.0f, v0);
                     ((ValueAnimator) param.thisObject).setInterpolator(
-                            (TimeInterpolator) XposedHelpers.newInstance(
-                                    springCls, 800f, 50.35f, 1.0f, v0));
-                    Port.log("FreeformFx: ball spring v0=" + v0);
+                            (TimeInterpolator) spring);
+                    long dur = springDuration(spring);
+                    if (dur > 0) {
+                        param.args[0] = dur; // 200ms -> spring 自然时长
+                    }
+                    Port.log("FreeformFx: ball spring v0=" + v0 + " dur=" + dur);
                 } catch (Throwable t) {
                     Port.log("FreeformFx: ball spring replace failed", t);
                 }
             }
         });
 
-        // (A5) 全屏过渡: S = L/(0.7r+0.3), 起播净缩放 = live 视觉缩放
-        final Class<?> ffAnim = XposedHelpers.findClass(FF_ANIM_CLS, cl);
-        XposedHelpers.findAndHookMethod(ffAnim, "setupLeashStartState",
-                XposedHelpers.findClass("android.view.SurfaceControl$Transaction", cl),
-                XposedHelpers.findClass("android.window.TransitionInfo$Change", cl),
+        // (A7) 贴边最小化过渡: stock change spring(206/27/v0=0) 换带初速度 spring
+        final Class<?> runnerCls = XposedHelpers.findClass(FF_RUNNER_CLS, cl);
+        XposedHelpers.findAndHookMethod(runnerCls, "getChangeAnimInterPolater",
+                new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                if (!Port.on(Port.KEY_FF_ANIM)) {
+                    return;
+                }
+                try {
+                    float[] stash = sMinimizeVel;
+                    if (stash == null
+                            || SystemClock.uptimeMillis() - (long) stash[1] > 800L) {
+                        return;
+                    }
+                    sMinimizeVel = null;
+                    float v0 = Math.max(0f, Math.min(8f, stash[0]));
+                    Class<?> springCls = XposedHelpers.findClass(SPRING_CLS, sCl);
+                    param.setResult(XposedHelpers.newInstance(
+                            springCls, 800f, 50.35f, 1.0f, v0));
+                    Port.log("FreeformFx: minimize spring v0=" + v0);
+                } catch (Throwable t) {
+                    Port.log("FreeformFx: minimize spring replace failed", t);
+                }
+            }
+        });
+
+        // (A5) 全屏过渡连贯: 在 f 读取(line 314)前修正 change,
+        //      保证 f 与 setupLeashStartState 的 leash 预缩放一致
+        XposedHelpers.findAndHookMethod(runnerCls, "createChangeAnimationAdapters",
                 XposedHelpers.findClass("android.window.TransitionInfo", cl),
-                XposedHelpers.findClass(
-                        "com.android.wm.shell.hnfreeform.HnRunningFreeformTaskInfo", cl),
+                XposedHelpers.findClass("android.view.SurfaceControl$Transaction", cl),
                 new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
@@ -576,48 +754,120 @@ public final class FreeformFx {
                     return;
                 }
                 try {
-                    Object change = param.args[1];
-                    Object hnInfo = param.args[3];
-                    Object taskInfo = XposedHelpers.callMethod(change, "getTaskInfo");
-                    if (taskInfo == null) {
-                        return;
+                    Object info = param.args[0];
+                    Iterable<?> changes = (Iterable<?>)
+                            XposedHelpers.callMethod(info, "getChanges");
+                    for (Object change : changes) {
+                        fixFullscreenChange(change);
                     }
-                    int taskId = XposedHelpers.getIntField(taskInfo, "taskId");
-                    Live live = takeLive(taskId);
-                    if (live == null || live.scale <= 0f) {
-                        return;
-                    }
-                    // 无 freeformAnimationLeash: adapter 每帧覆盖 matrix, 末态=1/S,
-                    // 改写 S 会导致"末态过大", 跳过 (stock 行为)
-                    Object animLeash = XposedHelpers.callMethod(change,
-                            "getFreeformAnimationLeash");
-                    if (animLeash == null) {
-                        Port.log("FreeformFx: fullscreen skip (no anim leash) task=" + taskId);
-                        return;
-                    }
-                    Rect start = (Rect) XposedHelpers.callMethod(change, "getStartAbsBounds");
-                    Rect end = (Rect) XposedHelpers.callMethod(change, "getEndAbsBounds");
-                    if (start == null || end == null || end.width() <= 0) {
-                        return;
-                    }
-                    float r = start.width() / (float) end.width();
-                    float p = 0.7f;
-                    float s = live.scale / (p * r + (1 - p));
-                    try {
-                        XposedHelpers.callMethod(change, "setLastFreeformScale", s);
-                    } catch (Throwable t) {
-                        XposedHelpers.setFloatField(change, "mLastFreeformScale", s);
-                    }
-                    if (hnInfo != null) {
-                        XposedHelpers.callMethod(hnInfo, "setCurrentScale", live.scale);
-                    }
-                    Port.log("FreeformFx: fullscreen S=" + s + " L=" + live.scale
-                            + " r=" + r + " task=" + taskId);
                 } catch (Throwable t) {
-                    Port.log("FreeformFx: setupLeashStartState override failed", t);
+                    Port.log("FreeformFx: fullscreen change fix failed", t);
                 }
             }
         });
+    }
+
+    /**
+     * (A5) 对 mode==6 且 pre==5 -> win==1 的 change 修正:
+     * 有 animLeash: setStartAbsBounds(liveRect), S=L/(0.7r+0.3) -> 起播净缩放=L;
+     * 无 animLeash (adapter 每帧覆盖 matrix, end=1/S): S=1 保证末态=1,
+     * 合成 startAbsBounds r'=(L-0.3)/0.7 -> 起播 fWidth=L 连贯.
+     */
+    private static void fixFullscreenChange(Object change) {
+        try {
+            if ((Integer) XposedHelpers.callMethod(change, "getMode") != 6) {
+                return;
+            }
+            Object taskInfo = XposedHelpers.callMethod(change, "getTaskInfo");
+            if (taskInfo == null) {
+                return;
+            }
+            int pre;
+            try {
+                pre = XposedHelpers.getIntField(taskInfo, "preWindowMode");
+            } catch (Throwable t) {
+                if (!sPreFieldMissing) {
+                    sPreFieldMissing = true;
+                    Port.log("FreeformFx: preWindowMode field missing, skip A5");
+                }
+                return;
+            }
+            int win = (Integer) XposedHelpers.callMethod(taskInfo, "getWindowingMode");
+            if (pre != 5 || win != 1) {
+                return;
+            }
+            int taskId = XposedHelpers.getIntField(taskInfo, "taskId");
+            Live live = takeLive(taskId);
+            if (live == null || live.bounds == null
+                    || live.scale <= 0f || live.scale > 1.5f) {
+                return;
+            }
+            Rect end = (Rect) XposedHelpers.callMethod(change, "getEndAbsBounds");
+            if (end == null || end.isEmpty()) {
+                return;
+            }
+            Object animLeash = XposedHelpers.callMethod(change, "getFreeformAnimationLeash");
+            boolean hasLeash = animLeash != null
+                    && Boolean.TRUE.equals(XposedHelpers.callMethod(animLeash, "isValid"));
+            if (hasLeash) {
+                Rect start = new Rect(live.bounds);
+                try {
+                    XposedHelpers.callMethod(change, "setStartAbsBounds", start);
+                } catch (Throwable t) {
+                    Port.log("FreeformFx: setStartAbsBounds failed", t);
+                    return;
+                }
+                float r = start.width() / (float) end.width();
+                float s = live.scale / (0.7f * r + 0.3f);
+                setChangeLastScale(change, s);
+                Port.log("FreeformFx: fullscreen(leash) S=" + s + " L=" + live.scale
+                        + " r=" + r + " task=" + taskId);
+            } else {
+                float rp = (live.scale - 0.3f) / 0.7f;
+                if (rp <= 0.05f) {
+                    // live 太小, 无法合成连贯 start, 仅保证末态正确
+                    setChangeLastScale(change, 1.0f);
+                    Port.log("FreeformFx: fullscreen(no leash) S=1 only, L="
+                            + live.scale + " task=" + taskId);
+                    return;
+                }
+                Rect synth = new Rect(0, 0,
+                        (int) (rp * end.width()), (int) (rp * end.height()));
+                synth.offsetTo(live.bounds.left, live.bounds.top);
+                try {
+                    XposedHelpers.callMethod(change, "setStartAbsBounds", synth);
+                } catch (Throwable t) {
+                    Port.log("FreeformFx: setStartAbsBounds(no leash) failed", t);
+                    return;
+                }
+                setChangeLastScale(change, 1.0f);
+                Port.log("FreeformFx: fullscreen(no leash) S=1 r'=" + rp
+                        + " task=" + taskId);
+            }
+        } catch (Throwable t) {
+            Port.log("FreeformFx: fullscreen change skip", t);
+        }
+    }
+
+    private static void setChangeLastScale(Object change, float s) {
+        try {
+            XposedHelpers.callMethod(change, "setLastFreeformScale", s);
+            return;
+        } catch (Throwable ignored) {
+        }
+        XposedHelpers.setFloatField(change, "mLastFreeformScale", s);
+    }
+
+    /** SpringInterpolator.getDuration(): spring 自然时长 ms, 失败返回 0 */
+    private static long springDuration(Object spring) {
+        try {
+            Object d = XposedHelpers.callMethod(spring, "getDuration");
+            if (d instanceof Number) {
+                return ((Number) d).longValue();
+            }
+        } catch (Throwable ignored) {
+        }
+        return 0L;
     }
 
     // ------------------------------------------------------------------
@@ -679,6 +929,16 @@ public final class FreeformFx {
             if (now - it.next().getValue().at > STASH_TTL_MS) {
                 it.remove();
             }
+        }
+    }
+
+    private static void setLongFieldReflect(Object obj, String name, long value) {
+        try {
+            java.lang.reflect.Field f = obj.getClass().getDeclaredField(name);
+            f.setAccessible(true);
+            f.setLong(obj, value);
+        } catch (Throwable t) {
+            Port.log("FreeformFx: set long field " + name + " failed", t);
         }
     }
 
