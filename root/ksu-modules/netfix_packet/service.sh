@@ -6,11 +6,13 @@ MODDIR=${0%/*}
 LOG=$MODDIR/netfix.log
 ts() { date '+%m-%d %H:%M:%S'; }
 
-LSPD=/data/adb/modules/zygisk_lsposed/daemon
-if [ -f "$LSPD" ] && grep -q '^mount tmpfs -t tmpfs /data/resource-cache' "$LSPD"; then
-    sed -i 's|^mount tmpfs -t tmpfs /data/resource-cache|[netfix_packet] patched: stacked tmpfs shadows all RRO idmaps|' "$LSPD" \
-        && echo "$(ts) service: patched zygisk_lsposed/daemon (tmpfs on /data/resource-cache)" >> "$LOG"
-fi
+# 补丁两份副本（modules + modules_update），理由同 post-fs-data.sh。
+for LSPD in /data/adb/modules/zygisk_lsposed/daemon /data/adb/modules_update/zygisk_lsposed/daemon; do
+    if [ -f "$LSPD" ] && grep -q '^mount tmpfs -t tmpfs /data/resource-cache' "$LSPD"; then
+        sed -i 's|^mount tmpfs -t tmpfs /data/resource-cache|[netfix_packet] patched: stacked tmpfs shadows all RRO idmaps|' "$LSPD" \
+            && echo "$(ts) service: patched $LSPD (tmpfs on /data/resource-cache)" >> "$LOG"
+    fi
+done
 
 n=0
 while grep -q " /data/resource-cache " /proc/1/mountinfo 2>/dev/null; do

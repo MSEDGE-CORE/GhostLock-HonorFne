@@ -14,11 +14,15 @@ MODDIR=${0%/*}
 LOG=$MODDIR/netfix.log
 ts() { date '+%m-%d %H:%M:%S'; }
 
-LSPD=/data/adb/modules/zygisk_lsposed/daemon
-if [ -f "$LSPD" ] && grep -q '^mount tmpfs -t tmpfs /data/resource-cache' "$LSPD"; then
-    sed -i 's|^mount tmpfs -t tmpfs /data/resource-cache|[netfix_packet] patched: stacked tmpfs shadows all RRO idmaps|' "$LSPD" \
-        && echo "$(ts) post-fs-data: patched zygisk_lsposed/daemon (tmpfs on /data/resource-cache)" >> "$LOG"
-fi
+# 补丁两份副本：modules（当次生效）+ modules_update（activate [1/4]/下轮
+# ksud 合并会用 MU 重建 modules 树——MU 不补丁则重建后补丁被覆盖,
+# grind_reboot8 实测 12:38:04 补丁被 [1/4] 于 12:38:08 用未补丁 MU 覆盖）。
+for LSPD in /data/adb/modules/zygisk_lsposed/daemon /data/adb/modules_update/zygisk_lsposed/daemon; do
+    if [ -f "$LSPD" ] && grep -q '^mount tmpfs -t tmpfs /data/resource-cache' "$LSPD"; then
+        sed -i 's|^mount tmpfs -t tmpfs /data/resource-cache|[netfix_packet] patched: stacked tmpfs shadows all RRO idmaps|' "$LSPD" \
+            && echo "$(ts) post-fs-data: patched $LSPD (tmpfs on /data/resource-cache)" >> "$LOG"
+    fi
+done
 
 n=0
 while grep -q " /data/resource-cache " /proc/1/mountinfo 2>/dev/null; do
