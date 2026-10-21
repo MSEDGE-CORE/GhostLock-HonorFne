@@ -594,12 +594,12 @@ public final class MotionReturnHome {
                             sy = cy;
                         }
                         // per tuning: Y spring v0 = measured card velocity x3.
-                        v0 = isX ? sx * 1f : sy * 4f;
+                        v0 = isX ? sx * 1f : sy * 3f;
                     } else {
                         rot = -1;
                         // per tuning: Y spring v0 = measured card velocity x3.
                         v0 = isX ? WindowFollowScale.curveVelX() * 1f
-                                : WindowFollowScale.curveVelY() * 4f;
+                                : WindowFollowScale.curveVelY() * 3f;
                     }
                 } else {
                     rot = liveRot(h);

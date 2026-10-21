@@ -325,6 +325,16 @@ private fun SettingsScreen() {
                             Port.KEY_KG_NO_TOOLBOX
                         ), true)
                     }
+                    SettingsSection("悬浮窗") {
+                        SettingsSwitchItem(ToggleRow(
+                            "手势优化", "挂起手势，最小化手势判定逻辑",
+                            Port.KEY_FF_GESTURE
+                        ), true)
+                        SettingsSwitchItem(ToggleRow(
+                            "动效优化", "平滑最小化，全屏动效连贯",
+                            Port.KEY_FF_ANIM
+                        ), true)
+                    }
                     SettingsSection("导航键") {
                         SettingsSwitchItem(ToggleRow(
                             "隐藏手势提示条", "隐藏手势提示条，保留底部抬升",

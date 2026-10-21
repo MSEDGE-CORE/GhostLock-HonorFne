@@ -496,6 +496,9 @@ public final class SystemUIHooks {
         XposedHelpers.findAndHookMethod(View.class, "setScaleX", float.class, scaleProbe);
         XposedHelpers.findAndHookMethod(View.class, "setScaleY", float.class, scaleProbe);
 
+        // (7) 悬浮窗手势/动效优化 (独立类, 各自 try-catch)
+        FreeformFx.install(cl);
+
         Port.log("SystemUIHooks installed");
     }
 

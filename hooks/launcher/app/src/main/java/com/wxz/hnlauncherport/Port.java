@@ -40,6 +40,8 @@ public final class Port {
     public static final String KEY_NAV_HANDLE_NO_FOLLOW = "hn_port_nav_handle_no_follow"; // 1 = 禁用底部手势提示条跟手移动
     public static final String KEY_NAV_HANDLE_HIDE = "hn_port_nav_handle_hide"; // 1 = 隐藏手势提示条, 保留底部抬升(导航栏高度不变)
     public static final String KEY_RECENTS_WARMUP = "hn_port_recents_warmup"; // 1 = V14 上滑进后台冷启动优化: 空闲预热任务列表+模糊缓存, applyLoadPlan 小差异增量
+    public static final String KEY_FF_GESTURE = "hn_port_ff_gesture"; // 1 = 悬浮窗手势优化: 底部上滑挂起(不进圆球) + 横滑速度残留修复
+    public static final String KEY_FF_ANIM = "hn_port_ff_anim"; // 1 = 悬浮窗动效优化: 最小化/全屏 live 起播 + spring(ζ=0.89, 初速度)
 
     private static volatile Context sAppCtx;
 
