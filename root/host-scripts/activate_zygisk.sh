@@ -120,9 +120,11 @@ if ! $T15 adb shell "su 0 sh -c 'cmp -s /data/adb/zygisksu.bak/.magic /data/adb/
     echo "      [警告] .magic 未能恢复为已知有效值(zygisksu.bak 缺失或复制失败), verify1 必挂"
 fi
 
-echo "      [4/4] 等待注入落位(最长 90s)..."
+echo "      [4/4] 等待注入落位(最长 150s)..."
+# 90s 实测偶发不够(grind_reboot7: daemon 在窗口结束后数秒才落位,
+# 终态全绿但脚本误报未确认), 放宽到 150s。
 ok=0
-for i in $(seq 1 18); do
+for i in $(seq 1 30); do
     sleep 5
     if injected; then ok=1; break; fi
     echo "        ... 第 $((i*5))s, zygote 尚未注入"
