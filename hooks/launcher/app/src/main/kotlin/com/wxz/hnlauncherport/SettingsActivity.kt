@@ -324,6 +324,10 @@ private fun SettingsScreen() {
                             "禁用锁屏工具", "禁用锁屏底部上滑的工具菜单",
                             Port.KEY_KG_NO_TOOLBOX
                         ), true)
+                        SettingsSwitchItem(ToggleRow(
+                            "跳过面部解锁动画", "跳过密码界面面部解锁成功的笑脸动画，直接进入桌面",
+                            Port.KEY_KG_SKIP_FACE_ANIM
+                        ), true)
                     }
                     SettingsSection("悬浮窗") {
                         SettingsSwitchItem(ToggleRow(

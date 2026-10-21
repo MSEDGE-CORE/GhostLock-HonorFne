@@ -476,8 +476,8 @@ public final class FreeformFx {
         float dx = ev.getRawX() - track[0];
         float liveLeft = taskBounds.left + dx;
         float liveRight = taskBounds.right + dx;
-        // 越出屏幕的部分 >= 窗口宽 8.5/20 -> 贴边
-        float offThreshold = taskBounds.width() * 8.5f / 20f;
+        // 越出屏幕的部分 >= 窗口宽 0.3 -> 贴边
+        float offThreshold = taskBounds.width() * 0.3f;
         int dir = maxBounds.left - liveLeft >= offThreshold ? 0
                 : liveRight - maxBounds.right >= offThreshold ? 1 : -1;
         if (dir < 0) {

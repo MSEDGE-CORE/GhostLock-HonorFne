@@ -364,6 +364,44 @@ public final class SystemUIHooks {
             }
         });
 
+        // (7) 跳过密码界面面部解锁成功动画: 面部成功(10)时 stock 依次播
+        // detect_animation_complete -> detect_animation_success (笑脸)
+        // 后才 notifyKeyguardAuthenticated; 改为直接解锁.
+        final Class<?> faceStateListenerCls = XposedHelpers.findClass(
+                "com.hihonor.keyguard.HwKeyguardAbsKeyInputView$FaceUnlockStateListener", cl);
+        final Class<?> kgPolicyCls = XposedHelpers.findClass(
+                "com.hihonor.keyguard.inf.HwKeyguardPolicy", cl);
+        XposedHelpers.findAndHookMethod(faceStateListenerCls,
+                "startDetectCompletedAnimation", int.class, int.class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                if (!Port.on(Port.KEY_KG_SKIP_FACE_ANIM)) {
+                    return;
+                }
+                if (((Integer) param.args[0]).intValue() != 10) {
+                    return; // 仅面部成功
+                }
+                Object policy = XposedHelpers.callStaticMethod(kgPolicyCls, "getInst");
+                XposedHelpers.callMethod(policy, "notifyKeyguardAuthenticated");
+                param.setResult(null); // 跳过 complete + 笑脸动画
+                Port.log("SystemUIHooks: face success anim skipped, direct unlock");
+            }
+        });
+        // 兜底: 若笑脸动画仍被其它路径直接触发, 同样直接解锁
+        XposedHelpers.findAndHookMethod(faceStateListenerCls,
+                "startDetectSuccessAnimation", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                if (!Port.on(Port.KEY_KG_SKIP_FACE_ANIM)) {
+                    return;
+                }
+                Object policy = XposedHelpers.callStaticMethod(kgPolicyCls, "getInst");
+                XposedHelpers.callMethod(policy, "notifyKeyguardAuthenticated");
+                param.setResult(null);
+                Port.log("SystemUIHooks: face success anim skipped (fallback)");
+            }
+        });
+
         // 杂志锁屏路径: MagazineDetailView.isInterestedEvent (mTouchMode=6 lift)
         final Class<?> magazineDetailCls = XposedHelpers.findClass(
                 "com.android.keyguard.hwlockscreen.magazine.MagazineDetailView", cl);
