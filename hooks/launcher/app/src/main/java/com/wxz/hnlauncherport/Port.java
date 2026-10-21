@@ -39,6 +39,7 @@ public final class Port {
     public static final String KEY_KG_NO_TOOLBOX = "hn_port_kg_no_toolbox"; // 1 = 禁用锁屏底部上滑工具菜单
     public static final String KEY_NAV_HANDLE_NO_FOLLOW = "hn_port_nav_handle_no_follow"; // 1 = 禁用底部手势提示条跟手移动
     public static final String KEY_NAV_HANDLE_HIDE = "hn_port_nav_handle_hide"; // 1 = 隐藏手势提示条, 保留底部抬升(导航栏高度不变)
+    public static final String KEY_RECENTS_WARMUP = "hn_port_recents_warmup"; // 1 = V14 上滑进后台冷启动优化: 空闲预热任务列表+模糊缓存, applyLoadPlan 小差异增量
 
     private static volatile Context sAppCtx;
 

@@ -120,7 +120,7 @@ private data class ToggleRow(
     val title: String,
     val subtitle: String,
     val key: String,
-    val mergedKey: String? = null
+    val mergedKeys: List<String> = emptyList()
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -155,7 +155,7 @@ private fun SettingsScreen() {
     // 动效
     val motionRows = remember { listOf(
         ToggleRow("应用启动关闭动效优化", "新版模型，连贯曲线，横屏修复",
-            Port.KEY_MOTION, Port.KEY_ICON_HIDE),
+            Port.KEY_MOTION, listOf(Port.KEY_ICON_HIDE, Port.KEY_RECENTS_WARMUP)),
         ToggleRow("锚点优化", "窗口向0.2移动缩小", Port.KEY_WIN_SCALE),
         ToggleRow("连续切换应用", "立即停止上一个窗口", Port.KEY_PARALLEL),
         ToggleRow("高级模糊", "启用高端机型的模糊效果，优化部分速率曲线", Port.KEY_BLUR),
@@ -418,7 +418,7 @@ private fun SettingsSwitchItem(row: ToggleRow, secure: Boolean) {
             checked = checked,
             onCheckedChange = { on ->
                 val ok = writeKey(context, row.key, on) &&
-                        (row.mergedKey == null || writeKey(context, row.mergedKey, on))
+                        row.mergedKeys.all { writeKey(context, it, on) }
                 if (ok) {
                     checked = on
                 } else {

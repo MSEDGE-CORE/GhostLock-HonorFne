@@ -329,8 +329,8 @@ public final class MotionReturnHome {
                         new XC_MethodHook() {
                             @Override
                             protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                                if (!motionEnabled()) {
-                                    return;
+                                if (!motionEnabled() || !Port.on(Port.KEY_WIN_DEBUG)) {
+                                    return; // per-frame 探针仅调试时开, 避免帧路径日志阻塞主线程
                                 }
                                 Port.log("MotionReverse tx=" + param.args[0]
                                         + " ty=" + param.args[1]
@@ -349,8 +349,8 @@ public final class MotionReturnHome {
                 XposedBridge.hookAllMethods(cah, "applyTransformReturnHome", new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        if (!motionEnabled()) {
-                            return;
+                        if (!motionEnabled() || !Port.on(Port.KEY_WIN_DEBUG)) {
+                            return; // per-frame 探针仅调试时开, 避免帧路径日志阻塞主线程
                         }
                         Object p = param.args.length > 1 ? param.args[param.args.length - 1] : null;
                         if (p == null) {
@@ -594,12 +594,12 @@ public final class MotionReturnHome {
                             sy = cy;
                         }
                         // per tuning: Y spring v0 = measured card velocity x3.
-                        v0 = isX ? sx : sy * 3f;
+                        v0 = isX ? sx * 1f : sy * 4f;
                     } else {
                         rot = -1;
                         // per tuning: Y spring v0 = measured card velocity x3.
-                        v0 = isX ? WindowFollowScale.curveVelX()
-                                : WindowFollowScale.curveVelY() * 3f;
+                        v0 = isX ? WindowFollowScale.curveVelX() * 1f
+                                : WindowFollowScale.curveVelY() * 4f;
                     }
                 } else {
                     rot = liveRot(h);
@@ -629,7 +629,7 @@ public final class MotionReturnHome {
                         // -14k..-21k (the v0.6 freeze class).
                         wfsSyn = true;
                         float capped = Math.max(-2000f, Math.min(2000f, speed));
-                        v0 = capped * (isX ? 1f : 1.375f);
+                        v0 = capped * (isX ? 1f : 1.5f);
                     } else {
                         // v0.4 semantics: the observed v0 was PINNED at -500 on
                         // fast flicks = the stock z=false +/-2000 speed cap *
@@ -705,8 +705,8 @@ public final class MotionReturnHome {
                 if (curveLive) {
                     rot = -1;
                     // wfs scale initial velocity gain x1.4, clamp endPos*18
-                    v0 = Math.min(Math.abs(WindowFollowScale.curveVelSig()) * 1.4f,
-                            endPos * 18f);
+                    v0 = Math.max(Math.min(Math.abs(WindowFollowScale.curveVelSig()) * 1.5f,
+                            endPos * 30f),5f);
                 } else {
                     rot = liveRot(h);
                     float speed = screenSpeed(h, isIcon, isX, rot);
@@ -723,7 +723,7 @@ public final class MotionReturnHome {
                         wfsSyn = true;
                         float bounded = Math.max(-11000f, Math.min(11000f, speed));
                         float sigRate = bounded * 1.25f / span;
-                        v0 = Math.min(Math.abs(sigRate) * 1.4f, endPos * 18f);
+                        v0 = Math.max(Math.min(Math.abs(sigRate) * 1.5f, endPos * 30f),5f);
                     } else {
                         // V14 velocity-coupled scale formula (kept - this is the
                         // "scale carries linear velocity" behavior); the speed is

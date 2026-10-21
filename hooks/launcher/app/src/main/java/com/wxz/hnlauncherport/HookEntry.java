@@ -108,6 +108,11 @@ public class HookEntry implements IXposedHookLoadPackage {
             Port.log("StartupWarmup install failed", t);
         }
         try {
+            com.wxz.hnlauncherport.warm.RecentsWarmup.install(lpparam.classLoader);
+        } catch (Throwable t) {
+            Port.log("RecentsWarmup install failed", t);
+        }
+        try {
             com.wxz.hnlauncherport.press.ForceIconPressScale.install(lpparam.classLoader);
         } catch (Throwable t) {
             Port.log("ForceIconPressScale install failed", t);
