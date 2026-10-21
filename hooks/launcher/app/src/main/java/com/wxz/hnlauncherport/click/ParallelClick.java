@@ -102,6 +102,9 @@ public final class ParallelClick {
                             if (!launchInFlight(param.thisObject)) {
                                 return;
                             }
+                            // 初次启动 gap / 启动动画早期: stock canBreak()==false 会让
+                            // 上滑打断判定失败; 强制 true 使打断路径生效.
+                            Port.log("SeqSwitch canBreak force-true (launch in flight)");
                             param.setResult(Boolean.TRUE);
                         }
                     });
@@ -123,15 +126,32 @@ public final class ParallelClick {
         }
     }
 
-    /** True while an app launch is in flight (GAC.mIsActivityStart). */
+    /**
+     * True while an app launch is in flight (GAC.mIsActivityStart).
+     *
+     * 优先直读字段: jadx 显示的字段名即 dex 真名; 而 getter/setter 方法名在本
+     * 构建中被混淆为 n (调用方 QuickstepAppTransitionManagerImpl 显示 .n(false)),
+     * 反编译声明处显示的 getIsActivityStart 不可信 — callMethod 按名反射,
+     * 名字对不上会静默 NoSuchMethodError -> 永远 false -> canBreak 强制失效.
+     * 字段读取失败再按双名兜底 (getIsActivityStart / n).
+     */
     private static boolean launchInFlight(Object controller) {
         if (controller == null) {
             return false;
         }
         try {
-            Object r = XposedHelpers.callMethod(controller, "getIsActivityStart");
-            return Boolean.TRUE.equals(r);
+            return XposedHelpers.getBooleanField(controller, "mIsActivityStart");
+        } catch (Throwable ignored) {
+        }
+        try {
+            return Boolean.TRUE.equals(
+                    XposedHelpers.callMethod(controller, "getIsActivityStart"));
+        } catch (Throwable ignored) {
+        }
+        try {
+            return Boolean.TRUE.equals(XposedHelpers.callMethod(controller, "n"));
         } catch (Throwable t) {
+            Port.log("SeqSwitch launchInFlight probe failed", t);
             return false;
         }
     }
