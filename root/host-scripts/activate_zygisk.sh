@@ -61,8 +61,12 @@ while ! have_root; do
     sleep 5; n=$((n + 1))
 done
 # RescueParty 止血(见头部注释 5): persist 属性跨重启永久生效。
-# 两种命名都覆盖(AOSP/Honor 分支差异), root 下 setprop persist.* 必成。
-$T15 adb shell "su 0 sh -c 'setprop persist.sys.enable_rescue_party false; setprop persist.sys.disable_rescue true'" >/dev/null 2>&1
+# 属性名来自设备 services.jar 反查(FNE 02:56 strings 实证):
+#   persist.sys.enable_rescue / persist.sys.disable_rescue(AOSP 命名,
+#   无 _party 后缀); 另有 device_config configuration 命名空间开关
+#   disable_rescue_party(_factory_reset), shell 无 root 即可设置,
+#   已在部署流程更早处先行设置 —— 此处 root 下补 persist 属性双保险。
+$T15 adb shell "su 0 sh -c 'setprop persist.sys.enable_rescue false; setprop persist.sys.disable_rescue true'" >/dev/null 2>&1
 if ! $T15 adb shell "su 0 test -f $MOD/service.sh" 2>/dev/null; then
     echo "      [提示] zygisksu 模块未挂载(可能未安装), 跳过"
     exit 0
@@ -81,8 +85,12 @@ while [ "$bc" != "1" ] && [ $n -lt 36 ]; do
     bc=$($T15 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
 done
 
-echo "      [1/4] 合并 modules_update 新装模块到挂载目录..."
-$T30 adb shell "su 0 sh -c 'for m in zygisksu zygisk_lsposed; do [ -d /data/adb/modules_update/\$m ] && cp -rf /data/adb/modules_update/\$m/. /data/adb/modules/\$m/ 2>/dev/null; done'" >/dev/null 2>&1
+echo "      [1/4] 重建 modules 树为 modules_update 精确副本(清除 zip 冗余文件)..."
+# 关键(rdt36/rdt37 实证): ZN daemon 的 verify1 是严格白名单校验,
+# install_managers 裸 unzip 留下的 zip 冗余文件(错误 ABI 目录 bin/riscv64,
+# bin/x86, lib/riscv64 等)会触发 "Module files corrupted" 注入中止。
+# 故不能 cp -rf overlay 合并(旧文件残留), 必须整树重建。
+$T30 adb shell "su 0 sh -c 'for m in zygisksu zygisk_lsposed; do [ -d /data/adb/modules_update/\$m ] && { rm -rf /data/adb/modules/\$m; mkdir -p /data/adb/modules/\$m; cp -a /data/adb/modules_update/\$m/. /data/adb/modules/\$m/; }; done'" >/dev/null 2>&1
 if ! $T15 adb shell "su 0 test -e $MOD/bin/zygiskd" 2>/dev/null; then
     echo "      [警告] $MOD/bin/zygiskd 仍缺失(模块包不完整), 激活中止"
     exit 1

@@ -52,6 +52,14 @@ GhostLock-HonorFne/
     且 zygiskd 会把状态回写 `module.prop`，与哈希校验形成 "Module files
     corrupted" 死循环（FNE/LSA 实测）；LSPosed 管理器内嵌于模块，
     激活后经通知栏快捷方式进入。
+  - **ZN verify1 白名单校验（rdt36/rdt37 定位）**：zn-daemon 启动时对模块树做
+    严格白名单校验（"verify1"），树中任何 zip 冗余文件（旧版裸 unzip 留下的
+    `bin/riscv64`、`bin/x86`、`lib/riscv64` 等错误 ABI 目录）都会触发
+    "Module files corrupted" 注入中止——即使全部 `.sha256` 校验通过。
+    故 `activate_zygisk.sh` 的 [1/4] 步把 `modules/zygisksu`、
+    `modules/zygisk_lsposed` **整树重建为 `modules_update` 精确副本**
+    （`rm -rf` + `cp -a`），不做 overlay 合并；`modules_update` 由 ksud
+    官方安装生成，天然只含 customize.sh 产出的 21 文件白名单树。
 - **Zygisk 注入的 SELinux 配方**（已固化进 chain_hook.sh，ksud stages 前注入）：
   `magiskpolicy --live "permissive kernel" "permissive zygote"
   "permissive system_server"` + 逐个 `--apply /data/adb/modules/*/sepolicy.rule`。
