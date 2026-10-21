@@ -14,3 +14,4 @@ hooks/launcher/out/
 # grind 日志
 root/host-scripts/*.log
 root/host-scripts/w1_try*.log
+grind_*.log
