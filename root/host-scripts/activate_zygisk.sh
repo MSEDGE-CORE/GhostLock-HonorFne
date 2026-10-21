@@ -90,7 +90,13 @@ echo "      [1/4] 重建 modules 树为 modules_update 精确副本(清除 zip �
 # install_managers 裸 unzip 留下的 zip 冗余文件(错误 ABI 目录 bin/riscv64,
 # bin/x86, lib/riscv64 等)会触发 "Module files corrupted" 注入中止。
 # 故不能 cp -rf overlay 合并(旧文件残留), 必须整树重建。
-$T30 adb shell "su 0 sh -c 'for m in zygisksu zygisk_lsposed; do [ -d /data/adb/modules_update/\$m ] && { rm -rf /data/adb/modules/\$m; mkdir -p /data/adb/modules/\$m; cp -a /data/adb/modules_update/\$m/. /data/adb/modules/\$m/; }; done'" >/dev/null 2>&1
+# 但 ksud 安装失败会把 MU 清空、甚至留裸 zip 树(grind_reboot4 实证:
+# check_sepolicy 即 ksud sepolicy check 逐 boot 抖动), 此时必须保留
+# modules 原好树, 绝不拿无效 MU 覆盖。有效性判定:
+#   zygisksu: module.prop + bin/zygiskd(customize 产物, 裸 zip 树无此链接)
+#   zygisk_lsposed: module.prop + daemon.apk 且无 META-INF(裸 zip 有)
+r=$($T30 adb shell "su 0 sh -c 'for m in zygisksu zygisk_lsposed; do mu=/data/adb/modules_update/\$m; ok=0; if [ -f \$mu/module.prop ]; then case \$m in zygisksu) [ -e \$mu/bin/zygiskd ] && ok=1 ;; zygisk_lsposed) [ -f \$mu/daemon.apk ] && [ ! -d \$mu/META-INF ] && ok=1 ;; esac; fi; if [ \$ok = 1 ]; then rm -rf /data/adb/modules/\$m; mkdir -p /data/adb/modules/\$m; cp -a \$mu/. /data/adb/modules/\$m/; else echo \"        [提示] modules_update/\$m 无效(安装失败或未装), 保留 modules 原树\"; fi; done'" 2>/dev/null | tr -d '\r')
+[ -n "$r" ] && echo "$r"
 if ! $T15 adb shell "su 0 test -e $MOD/bin/zygiskd" 2>/dev/null; then
     echo "      [警告] $MOD/bin/zygiskd 仍缺失(模块包不完整), 激活中止"
     exit 1

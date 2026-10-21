@@ -59,19 +59,36 @@ fi
 echo "      使用 ksud: $KSUD"
 
 install_mod() { # $1=zip
-    local zip=$1 zid stage out rc
+    local zip=$1 zid stage out rc m
     zid=$(basename "$zip" .zip)
+    case $zid in
+      ZygiskNext) m=zygisksu ;;
+      *) m=zygisk_lsposed ;;
+    esac
     stage=/data/local/tmp/.gl_mod_$zid.zip
     if ! $T180 adb push "$zip" $stage >/dev/null 2>&1; then
         echo "      [警告] $zid 中转推送失败"
         return 1
     fi
+    # 安装前快照 modules/ 与 modules_update/ 现树: ksud 安装失败会把 MU
+    # 清空、甚至把裸 zip 树直接冲进 modules(grind_reboot4 实证: ZN
+    # customize.sh 的 check_sepolicy 即 `ksud sepolicy check`, 逐 boot
+    # 抖动), 失败时用快照还原, 绝不让坏树顶替好树。
+    $T30 adb shell "su 0 sh -c 'rm -rf /data/adb/.gl_modbak/\$m*; mkdir -p /data/adb/.gl_modbak; [ -d /data/adb/modules/\$m ] && cp -a /data/adb/modules/\$m /data/adb/.gl_modbak/\$m; [ -d /data/adb/modules_update/\$m ] && cp -a /data/adb/modules_update/\$m /data/adb/.gl_modbak/\$m.mu; true'" >/dev/null 2>&1
     out=$($T180 adb shell "su 0 $KSUD module install $stage" 2>&1 | tr -d '\r')
     rc=$?
     # adb shell 不一定可靠回传设备退出码, 以 "successfully" 文本双保险
     if [ $rc -ne 0 ] || ! echo "$out" | grep -q successfully; then
-        echo "      [警告] 模块 $zid 安装失败 (rc=$rc):"
+        echo "      [警告] 模块 $zid 安装失败 (rc=$rc), 隔 10s 重试一次:"
         echo "$out" | tail -n 6 | sed 's/^/        /'
+        sleep 10
+        out=$($T180 adb shell "su 0 $KSUD module install $stage" 2>&1 | tr -d '\r')
+        rc=$?
+    fi
+    if [ $rc -ne 0 ] || ! echo "$out" | grep -q successfully; then
+        echo "      [警告] 模块 $zid 重试仍失败, 还原安装前快照:"
+        echo "$out" | tail -n 6 | sed 's/^/        /'
+        $T30 adb shell "su 0 sh -c 'rm -rf /data/adb/modules/\$m /data/adb/modules_update/\$m; [ -d /data/adb/.gl_modbak/\$m ] && cp -a /data/adb/.gl_modbak/\$m /data/adb/modules/\$m; [ -d /data/adb/.gl_modbak/\$m.mu ] && cp -a /data/adb/.gl_modbak/\$m.mu /data/adb/modules_update/\$m; true'" >/dev/null 2>&1
         $T30 adb shell "rm -f $stage" >/dev/null 2>&1
         return 1
     fi
