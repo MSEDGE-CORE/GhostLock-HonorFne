@@ -100,6 +100,14 @@ for i in 1 2 3; do
 done
 if [ "$KSU_LOADED" = "1" ]; then
     echo "      KernelSU 已在运行，无需再次提权。"
+    # ksu_diag: /proc/modules 与 sysfs 双口径对照——模块已加载但上层
+    # 校验(sysfs/su/boot_completed)未过时, 由此定位卡在哪一环。
+    echo "      --- ksu_diag ---"
+    "$ADB" shell "grep kernelsu /proc/modules" 2>/dev/null | tr -d '\r' | sed 's/^/        modules: /'
+    SYSFS_KSU=$("$ADB" shell "ls -d /sys/module/kernelsu 2>/dev/null" 2>/dev/null | tr -d '\r')
+    echo "        sysfs: ${SYSFS_KSU:-/sys/module/kernelsu 不存在}"
+    "$ADB" shell "su 0 id" 2>/dev/null | tr -d '\r' | sed 's/^/        su 0 id: /'
+    echo "        boot_completed: $("$ADB" shell "getprop sys.boot_completed" 2>/dev/null | tr -d '\r')"
     ensure_module
     # 上次运行可能超时误判"未落地"(模块已加载但 su 未就绪): 补齐安装/激活,
     # 重跑即修复
