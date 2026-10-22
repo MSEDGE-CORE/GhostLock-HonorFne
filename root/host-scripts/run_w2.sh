@@ -76,6 +76,11 @@ for try in 1 2 3 4 5 6 7 8; do
     exit 0
   fi
   settle
+  # 本 TRY 起始 boot_id: 识别 W1/W2 期间设备是否已自行重启(exploit
+  # 崩溃触发保护性重启, rc=255)。已自重启的设备即新鲜 Enforcing 态,
+  # 脚本无须再 reboot 一次(295 无线用户实测 w1 rc=255 后二次重启
+  # 浪费一轮 + 一次手动 adb connect)。
+  boot0=$($T30 adb shell "cat /proc/sys/kernel/random/boot_id" 2>/dev/null | tr -d '\r')
   en=$($T30 adb shell getenforce 2>/dev/null | tr -d '\r')
   echo "=== TRY $try ADJ=$ADJ $(date +%T) getenforce=$en ==="
   if [ "$en" != "Permissive" ]; then
@@ -95,8 +100,23 @@ for try in 1 2 3 4 5 6 7 8; do
     done
   fi
   if [ "$en" != "Permissive" ]; then
-    echo "TRY $try: W1 failed (getenforce=$en) - reboot"
-    $T30 adb reboot; sleep 45; $T600 adb wait-for-device; sleep 25
+    # boot_id 变了 = 设备在 W1 期间已自行重启, 跳过脚本 reboot, 只等
+    # boot 完成。boot1 读不到(设备离线)则回落原行为(reboot 对离线设备
+    # 是无害 no-op, wait-for-device 等手动重连/自恢复)。
+    boot1=$($T30 adb shell "cat /proc/sys/kernel/random/boot_id" 2>/dev/null | tr -d '\r')
+    if [ -n "$boot1" ] && [ "$boot0" != "$boot1" ]; then
+      echo "TRY $try: W1 failed (getenforce=$en) - device self-rebooted during W1, skip extra reboot"
+      i=0
+      while [ $i -lt 60 ]; do
+        bc=$($T30 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+        [ "$bc" = "1" ] && break
+        i=$((i+1)); sleep 5
+      done
+      sleep 10
+    else
+      echo "TRY $try: W1 failed (getenforce=$en) - reboot"
+      $T30 adb reboot; sleep 45; $T600 adb wait-for-device; sleep 25
+    fi
     continue
   fi
   # Permissive now: capture previous boot's panic via pstore/ramoops
@@ -132,6 +152,19 @@ for try in 1 2 3 4 5 6 7 8; do
     echo "W2 clean miss, device still permissive - retrying W2 (attempt $((w2n+1)))"
   done
   [ "$w2done" = "1" ] && break
-  $T30 adb reboot; sleep 45; $T600 adb wait-for-device; sleep 25
+  # 同 W1: W2 崩溃致设备自重启时跳过冗余 reboot(boot_id 判定)
+  boot1=$($T30 adb shell "cat /proc/sys/kernel/random/boot_id" 2>/dev/null | tr -d '\r')
+  if [ -n "$boot1" ] && [ "$boot0" != "$boot1" ]; then
+    echo "W2 attempts exhausted - device self-rebooted during W2, skip extra reboot"
+    i=0
+    while [ $i -lt 60 ]; do
+      bc=$($T30 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+      [ "$bc" = "1" ] && break
+      i=$((i+1)); sleep 5
+    done
+    sleep 10
+  else
+    $T30 adb reboot; sleep 45; $T600 adb wait-for-device; sleep 25
+  fi
 done
 echo "=== FINAL getenforce=$($T30 adb shell getenforce 2>/dev/null | tr -d '\r') kernelsu_modules=$($T30 adb shell 'grep -c kernelsu /proc/modules 2>/dev/null' | tr -d '\r') ==="
