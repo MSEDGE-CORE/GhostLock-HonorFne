@@ -25,6 +25,10 @@ public final class Port {
     public static final String KEY_WIN_SCALE = "hn_port_win_scale"; // 1 = V17-style swipe-up window trajectory (converge toward W/2, 0.3H)
     public static final String KEY_KEEP_HIBOARD = "hn_port_keep_hiboard"; // 1 = 返家保持负一屏/资源库, 进后台才退出
     public static final String KEY_ONESTEP_THRESHOLD = "hn_port_onestep_threshold"; // 1 = swipe小窗/分屏阈值 0.8/0.75 横0.3H竖0.5H, 松手需停顿
+    public static final String KEY_ONESTEP_PX = "hn_port_onestep_px"; // float = 竖屏椭圆热区横半轴比例 (0.1-0.5, 默认 0.4)
+    public static final String KEY_ONESTEP_PY = "hn_port_onestep_py"; // float = 竖屏椭圆热区纵半轴比例 (0.1-0.6, 默认 0.55)
+    public static final String KEY_ONESTEP_LX = "hn_port_onestep_lx"; // float = 横屏椭圆热区横半轴比例 (0.1-0.5, 默认 0.4)
+    public static final String KEY_ONESTEP_LY = "hn_port_onestep_ly"; // float = 横屏椭圆热区纵半轴比例 (0.1-0.6, 默认 0.5)
     public static final String KEY_DISABLE_ICON_CARD = "hn_port_disable_icon_card"; // 1 = 禁用桌面上滑图标弹卡片 (资源库不受影响)
     public static final String KEY_ADV_UNLOCK_ANIM = "hn_port_adv_unlock_anim"; // 1 = 解锁图标圆形扩散动画 (高级解锁动画)
     public static final String KEY_ICON_NO_LABEL = "hn_port_icon_no_label"; // 1 = 图标无字: 隐藏桌面图标文本

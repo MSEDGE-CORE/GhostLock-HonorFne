@@ -1,7 +1,9 @@
 package com.wxz.hnlauncherport
 
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -16,6 +18,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -39,10 +42,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -68,9 +74,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.max
 
 /**
  * Feature-toggle GUI for HnLauncherPort（Jetpack Compose Material 3，
@@ -137,9 +146,13 @@ private fun SettingsScreen() {
     var tab by remember { mutableIntStateOf(0) }
     var pendingRestart by remember { mutableStateOf<String?>(null) }
     var showUnlockDialog by remember { mutableStateOf(false) }
+    var showThresholdDialog by remember { mutableStateOf(false) }
 
     if (showUnlockDialog) {
         UnlockAnimDialog(onDismiss = { showUnlockDialog = false })
+    }
+    if (showThresholdDialog) {
+        OneStepThresholdDialog(onDismiss = { showThresholdDialog = false })
     }
 
     val restartTarget = pendingRestart
@@ -167,11 +180,11 @@ private fun SettingsScreen() {
         ToggleRow("锚点优化", "窗口向0.2移动缩小", Port.KEY_WIN_SCALE),
         ToggleRow("连续切换应用", "立即停止上一个窗口", Port.KEY_PARALLEL),
         ToggleRow("高级模糊", "启用高端机型的模糊效果，优化部分速率曲线", Port.KEY_BLUR),
-        ToggleRow("高级解锁动画", "分组扩散，渐进弹簧", Port.KEY_ADV_UNLOCK_ANIM)
+        ToggleRow("高级解锁动画...", "分组扩散，渐进弹簧（需重启桌面）", Port.KEY_ADV_UNLOCK_ANIM)
     ) }
     // 手势与行为
     val gestureRows = remember { listOf(
-        ToggleRow("小窗/分屏阈值优化", "防止大幅度滑动意外地进入小窗",
+        ToggleRow("小窗/分屏阈值优化...", "防止大幅度滑动意外地进入小窗",
             Port.KEY_ONESTEP_THRESHOLD),
         ToggleRow("负一屏/资源库保持", "手势返回不自动退出负一屏/资源库",
             Port.KEY_KEEP_HIBOARD),
@@ -181,7 +194,7 @@ private fun SettingsScreen() {
 
     // 外观
     val lookRows = remember { listOf(
-        ToggleRow("图标无字", "隐藏桌面图标文本",
+        ToggleRow("图标无字", "隐藏桌面图标文本（需重启桌面）",
             Port.KEY_ICON_NO_LABEL)
     ) }
 
@@ -192,7 +205,7 @@ private fun SettingsScreen() {
             TopAppBar(
                 title = {
                     Text(when (tab) {
-                        0 -> "HN系统提升"
+                        0 -> "耀衍"
                         1 -> "桌面"
                         else -> "SystemUI"
                     })
@@ -229,7 +242,7 @@ private fun SettingsScreen() {
             }
         }
     ) { padding ->
-        Column(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = padding.calculateTopPadding())
@@ -238,11 +251,27 @@ private fun SettingsScreen() {
                         WindowInsetsSides.Left + WindowInsetsSides.Right
                     )
                 )
-                .padding(horizontal = 20.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(bottom = padding.calculateBottomPadding() + 24.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp)
+                .padding(bottom = padding.calculateBottomPadding())
         ) {
+            // 数学计算: 量取内容高与按钮高, spacer = viewport - content - buttons
+            // - 72dp (上下 gap 24*2 + 底 padding 24); 内容不足一屏时 spacer 撑起
+            // 把按钮压到内容区底部, 需要滚动时 spacer 为 0 按钮归入内容流末尾.
+            val density = LocalDensity.current
+            val viewportPx = with(density) { maxHeight.toPx() }
+            var contentPx by remember { mutableIntStateOf(0) }
+            var buttonsPx by remember { mutableIntStateOf(0) }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(24.dp)
+            ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onSizeChanged { contentPx = it.height }
+            ) {
             when (tab) {
                 0 -> {
                     val appVersion = remember {
@@ -261,22 +290,28 @@ private fun SettingsScreen() {
                             "unknown"
                         }
                     }
-                    SettingsSection("信息") {
-                        InfoItem("系统版本", "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+                    val systemuiVersion = remember {
+                        try {
+                            context.packageManager.getPackageInfo("com.android.systemui", 0)
+                                .versionName ?: "unknown"
+                        } catch (e: Exception) {
+                            "unknown"
+                        }
+                    }
+                    val deviceName = remember { deviceDisplayName() }
+                    val magicOsVersion = remember { magicOsVersionString() }
+                    SettingsSection("") {
+                        InfoItem("设备型号", Build.MODEL)
+                        InfoItem("设备名称", deviceName)
+                        InfoItem("系统版本", magicOsVersion)
+                        InfoItem("安卓版本", "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
                         InfoItem("桌面版本", launcherVersion)
+                        InfoItem("SystemUI 版本", systemuiVersion)
                     }
                     SettingsSection("关于") {
-                        Text(
-                            "名称：HN系统提升\n版本：$appVersion\n作者：MSEDGE",
-                            style = MaterialTheme.typography.bodyLarge
-                        )
-                    }
-                    SettingsSection("操作") {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            ActionButton("重启 SystemUI") { pendingRestart = "systemui" }
-                            ActionButton("重启桌面") { pendingRestart = "launcher" }
-                            ActionButton("重启 AOD") { pendingRestart = "aod" }
-                        }
+                        InfoItem("版本", appVersion)
+                        LinkItem("开发者", "MSEDGE", "https://github.com/MSEDGE-CORE")
+                        LinkItem("Github 仓库", null, "https://github.com/MSEDGE-CORE/GhostLock-HonorFne")
                     }
                 }
                 1 -> {
@@ -285,7 +320,8 @@ private fun SettingsScreen() {
                             "缺少 WRITE_SECURE_SETTINGS 权限，开关无法保存。\n请执行：\n" +
                                     "pm grant com.wxz.hnlauncherport android.permission.WRITE_SECURE_SETTINGS",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.error
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(horizontal = 20.dp)
                         )
                     }
                     SettingsSection("动效") {
@@ -299,7 +335,14 @@ private fun SettingsScreen() {
                         }
                     }
                     SettingsSection("手势与行为") {
-                        gestureRows.forEach { row -> SettingsSwitchItem(row, secure) }
+                        gestureRows.forEach { row ->
+                            SettingsSwitchItem(
+                                row, secure,
+                                onRowClick = if (row.key == Port.KEY_ONESTEP_THRESHOLD) {
+                                    { showThresholdDialog = true }
+                                } else null
+                            )
+                        }
                     }
                     SettingsSection("外观") {
                         lookRows.forEach { row -> SettingsSwitchItem(row, secure) }
@@ -346,7 +389,7 @@ private fun SettingsScreen() {
                     }
                     SettingsSection("悬浮窗") {
                         SettingsSwitchItem(ToggleRow(
-                            "手势优化", "小窗角落内滑挂起，贴边最小化",
+                            "手势优化", "小窗角落向内滑动快速挂起，贴边最小化",
                             Port.KEY_FF_GESTURE
                         ), true)
                         SettingsSwitchItem(ToggleRow(
@@ -371,11 +414,28 @@ private fun SettingsScreen() {
                         ), true)
                         RootDisableItem(
                             title = "禁用自动更新",
-                            subtitle = "禁用系统自动更新服务（需要ROOT权限）",
+                            subtitle = "禁用系统自动更新服务（需ROOT权限）",
                             pkg = "com.hihonor.ouc"
                         )
                     }
                 }
+            }
+            }
+            if (tab == 0) {
+                Spacer(Modifier.height(with(density) {
+                    max(0f, viewportPx - contentPx - buttonsPx - 72.dp.toPx()).toDp()
+                }))
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .padding(horizontal = 20.dp)
+                        .onSizeChanged { buttonsPx = it.height }
+                ) {
+                    ActionButton("重启 SystemUI") { pendingRestart = "systemui" }
+                    ActionButton("重启桌面") { pendingRestart = "launcher" }
+                    ActionButton("重启 AOD") { pendingRestart = "aod" }
+                }
+            }
             }
         }
     }
@@ -387,7 +447,7 @@ private fun InfoItem(label: String, value: String) {
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 12.dp)
+            .padding(horizontal = 20.dp, vertical = 12.dp)
     ) {
         Text(
             label,
@@ -408,13 +468,56 @@ private fun InfoItem(label: String, value: String) {
 @Composable
 private fun SettingsSection(label: String, content: @Composable () -> Unit) {
     Column {
+        if (label.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+            )
+        }
+        content()
+    }
+}
+
+/** 可点击的链接行: value 非空时右侧显示文本, showChevron 时显示 > 箭头. */
+@Composable
+private fun LinkItem(label: String, value: String?, url: String) {
+    val context = LocalContext.current
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                try {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                } catch (e: Exception) {
+                    Toast.makeText(context, "无法打开链接", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .padding(horizontal = 20.dp, vertical = 12.dp)
+    ) {
         Text(
             label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface
         )
-        Spacer(Modifier.height(4.dp))
-        content()
+        Spacer(Modifier.weight(1f))
+        if (value != null) {
+            Text(
+                value,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            Icon(
+                Icons.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
@@ -431,8 +534,8 @@ private fun SettingsSwitchItem(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = onRowClick != null) { onRowClick?.invoke() }
-            .padding(vertical = 12.dp)
+            .clickable(enabled = onRowClick != null && checked) { onRowClick?.invoke() }
+            .padding(horizontal = 20.dp, vertical = 12.dp)
     ) {
         Column(Modifier.weight(1f)) {
             Text(
@@ -456,7 +559,7 @@ private fun SettingsSwitchItem(
                 if (ok) {
                     checked = on
                 } else {
-                    Toast.makeText(context, "写入失败（缺少权限）", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "写入失败", Toast.LENGTH_SHORT).show()
                 }
             },
             enabled = secure
@@ -490,7 +593,19 @@ private fun UnlockAnimDialog(onDismiss: () -> Unit) {
     }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("自定义解锁动画") },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("高级解锁动画")
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = {
+                    scale = 1.8f
+                    anchor = 0.3f
+                    delay = 30f
+                }) {
+                    Icon(Icons.Filled.RestartAlt, contentDescription = "恢复默认")
+                }
+            }
+        },
         text = {
             Column {
                 Text("起始尺寸：" + String.format("%.1f", scale))
@@ -528,7 +643,7 @@ private fun UnlockAnimDialog(onDismiss: () -> Unit) {
                             context.contentResolver, Port.KEY_ADV_UNLOCK_DELAY, delay)
                 Toast.makeText(
                     context,
-                    if (ok) "已保存，下次解锁生效" else "写入失败（缺少权限）",
+                    if (ok) "已保存" else "写入失败）",
                     Toast.LENGTH_SHORT
                 ).show()
                 onDismiss()
@@ -536,11 +651,112 @@ private fun UnlockAnimDialog(onDismiss: () -> Unit) {
         },
         dismissButton = {
             Row {
-                TextButton(onClick = {
-                    scale = 1.8f
-                    anchor = 0.3f
-                    delay = 30f
-                }) { Text("恢复默认") }
+                TextButton(onClick = onDismiss) { Text("取消") }
+            }
+        }
+    )
+}
+
+/**
+ * 自定义小窗/分屏阈值 (小窗/分屏阈值优化行点击弹出):
+ *  - 竖屏X/横屏X (0.1-0.5): 椭圆热区横半轴比例 (默认 0.4)
+ *  - 竖屏Y/横屏Y (0.1-0.6): 椭圆热区纵半轴比例 (默认 0.55/0.5)
+ *  - 恢复默认: 0.4/0.55/0.4/0.5; 取消不保存; 确定写入后实时生效
+ */
+@Composable
+private fun OneStepThresholdDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    var px by remember {
+        mutableFloatStateOf(
+            Settings.Global.getFloat(
+                context.contentResolver, Port.KEY_ONESTEP_PX, 0.4f).coerceIn(0.1f, 0.5f))
+    }
+    var py by remember {
+        mutableFloatStateOf(
+            Settings.Global.getFloat(
+                context.contentResolver, Port.KEY_ONESTEP_PY, 0.55f).coerceIn(0.1f, 0.6f))
+    }
+    var lx by remember {
+        mutableFloatStateOf(
+            Settings.Global.getFloat(
+                context.contentResolver, Port.KEY_ONESTEP_LX, 0.4f).coerceIn(0.1f, 0.5f))
+    }
+    var ly by remember {
+        mutableFloatStateOf(
+            Settings.Global.getFloat(
+                context.contentResolver, Port.KEY_ONESTEP_LY, 0.5f).coerceIn(0.1f, 0.6f))
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("小窗/分屏阈值优化")
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = {
+                    px = 0.4f
+                    py = 0.55f
+                    lx = 0.4f
+                    ly = 0.5f
+                }) {
+                    Icon(Icons.Filled.RestartAlt, contentDescription = "恢复默认")
+                }
+            }
+        },
+        text = {
+            Column {
+                Text("竖屏X：" + String.format("%.2f", px))
+                Slider(
+                    value = px,
+                    valueRange = 0.1f..0.5f,
+                    steps = 7,
+                    onValueChange = { px = it }
+                )
+                Spacer(Modifier.height(12.dp))
+                Text("竖屏Y：" + String.format("%.2f", py))
+                Slider(
+                    value = py,
+                    valueRange = 0.1f..0.6f,
+                    steps = 9,
+                    onValueChange = { py = it }
+                )
+                Spacer(Modifier.height(12.dp))
+                Text("横屏X：" + String.format("%.2f", lx))
+                Slider(
+                    value = lx,
+                    valueRange = 0.1f..0.5f,
+                    steps = 7,
+                    onValueChange = { lx = it }
+                )
+                Spacer(Modifier.height(12.dp))
+                Text("横屏Y：" + String.format("%.2f", ly))
+                Slider(
+                    value = ly,
+                    valueRange = 0.1f..0.6f,
+                    steps = 9,
+                    onValueChange = { ly = it }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val ok = Settings.Global.putFloat(
+                    context.contentResolver, Port.KEY_ONESTEP_PX, px) &&
+                        Settings.Global.putFloat(
+                            context.contentResolver, Port.KEY_ONESTEP_PY, py) &&
+                        Settings.Global.putFloat(
+                            context.contentResolver, Port.KEY_ONESTEP_LX, lx) &&
+                        Settings.Global.putFloat(
+                            context.contentResolver, Port.KEY_ONESTEP_LY, ly)
+                Toast.makeText(
+                    context,
+                    if (ok) "已保存" else "写入失败",
+                    Toast.LENGTH_SHORT
+                ).show()
+                onDismiss()
+            }) { Text("确定") }
+        },
+        dismissButton = {
+            Row {
                 TextButton(onClick = onDismiss) { Text("取消") }
             }
         }
@@ -561,7 +777,7 @@ private fun RootDisableItem(title: String, subtitle: String, pkg: String) {
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 12.dp)
+            .padding(horizontal = 20.dp, vertical = 12.dp)
     ) {
         Column(Modifier.weight(1f)) {
             Text(
@@ -594,7 +810,7 @@ private fun RootDisableItem(title: String, subtitle: String, pkg: String) {
                             when {
                                 ok && disabled && on -> "已禁用 $pkg"
                                 ok && !disabled && !on -> "已恢复 $pkg"
-                                else -> "操作失败（无 root 授权）"
+                                else -> "操作失败（无 ROOT 授权）"
                             },
                             Toast.LENGTH_SHORT
                         ).show()
@@ -622,8 +838,7 @@ private fun isPkgDisabled(pkg: String): Boolean = try {
     false
 }
 
-private fun readKey(context: android.content.Context, key: String): Boolean =
-    try {
+private fun readKey(context: android.content.Context, key: String): Boolean =    try {
         Settings.Global.getInt(context.contentResolver, key, 0) == 1
     } catch (e: Exception) {
         false
@@ -679,4 +894,28 @@ private fun restartProc(context: android.content.Context, target: String) {
             ).show()
         }
     }.start()
+}
+
+private fun readSystemProp(key: String): String? = try {
+    val sp = Class.forName("android.os.SystemProperties")
+    val get = sp.getMethod("get", String::class.java)
+    val v = get.invoke(null, key) as String
+    v.ifEmpty { null }
+} catch (e: Exception) {
+    null
+}
+
+/** 设备名称: 营销名 (如 HONOR 70, ro.config.marketing_name), 失败回退 Build.MODEL. */
+private fun deviceDisplayName(): String =
+    readSystemProp("ro.config.marketing_name") ?: Build.MODEL
+
+/** 系统版本: 定制系统版本 (如 MagicOS 8.0.0.221).
+ *  ro.build.version.magic = "MagicOS_8.0.0" 取前缀,
+ *  Build.VERSION.INCREMENTAL = "8.0.0.221C00E220R10P7" 取数字段. */
+private fun magicOsVersionString(): String {
+    val magic = readSystemProp("ro.build.version.magic")
+    val name = if (magic.isNullOrEmpty()) "MagicOS" else magic.substringBefore('_')
+    val inc = Build.VERSION.INCREMENTAL
+    val ver = inc.takeWhile { it.isDigit() || it == '.' }.trimEnd('.')
+    return if (ver.isNotEmpty()) "$name $ver" else inc
 }

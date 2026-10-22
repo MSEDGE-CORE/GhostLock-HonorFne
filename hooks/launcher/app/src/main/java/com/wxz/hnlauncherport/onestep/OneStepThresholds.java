@@ -22,7 +22,8 @@ import de.robv.android.xposed.XposedHelpers;
  *   isInFloatOrSplitWindowHot -> :1222 transformFullscreenToMiniWindow).
  *
  * New:
- *  (1) 过渡态阈值 0.8 (背景) / 0.75 (图标); 椭圆纵半轴横屏 0.3H, 竖屏 0.5H;
+ *  (1) 过渡态阈值 0.8 (背景) / 0.75 (图标); 椭圆热区半轴横竖屏 X/Y 分别由
+ *      KEY_ONESTEP_PX/PY/LX/LY 自定义 (默认 0.4/0.55/0.4/0.5, dialog 可调);
  *  (2) 松手增加速度判定: AbsSwipeUpHandler.handleNormalGestureEnd 的 fling 位
  *      (z = mGestureStarted && !mIsMotionPaused && |v| > quickstep_fling_
  *      threshold_speed, :1325) 为 true 即"快速滑动/返回桌面的速度" -> 不允许
@@ -60,16 +61,16 @@ public final class OneStepThresholds {
                             int h = XposedHelpers.getIntField(param.thisObject, "mScreenHeight");
                             int w = XposedHelpers.getIntField(param.thisObject, "mScreenWidth");
                             boolean landscape = w > h; // rot != 0
-                            // Y 椭圆纵半轴按跟手曲线 (curveLive) 是否启用取档:
-                            // 启用   -> 横 0.5H : 竖 0.55H (保持原值);
-                            // 未启用 -> 横 0.4H : 竖 0.5H.
-                            boolean curveLive = Port.on(Port.KEY_WIN_SCALE);
-                            float shapeYRatio = curveLive
-                                    ? (landscape ? 0.5f : 0.55f)
-                                    : (landscape ? 0.4f : 0.5f);
-                            // X 椭圆横半轴: 横屏 (rot!=0) 从 stock 0.5W 收窄到
-                            // 0.2W, 竖屏保持 stock 0.5W.
-                            float shapeXRatio = landscape ? 0.4f : 0.4f;
+                            // 椭圆热区半轴比例自定义 (dialog 可调):
+                            //   竖屏 X/Y = KEY_ONESTEP_PX/PY (默认 0.4/0.55)
+                            //   横屏 X/Y = KEY_ONESTEP_LX/LY (默认 0.4/0.5)
+                            // X clamp 0.1-0.5, Y clamp 0.1-0.6.
+                            float shapeXRatio = clamp(Port.getFloat(
+                                    landscape ? Port.KEY_ONESTEP_LX : Port.KEY_ONESTEP_PX,
+                                    landscape ? 0.4f : 0.4f), 0.1f, 0.5f);
+                            float shapeYRatio = clamp(Port.getFloat(
+                                    landscape ? Port.KEY_ONESTEP_LY : Port.KEY_ONESTEP_PY,
+                                    landscape ? 0.5f : 0.55f), 0.1f, 0.6f);
                             XposedHelpers.setFloatField(param.thisObject, "mShowBgHotY", h * 0.8f);
                             XposedHelpers.setFloatField(param.thisObject, "mShowIconHotY", h * 0.75f);
                             XposedHelpers.setFloatField(param.thisObject, "mScaleHotY", h * 0.75f);
@@ -79,8 +80,7 @@ public final class OneStepThresholds {
                                     + " bg=" + (h * 0.8f) + " icon=" + (h * 0.75f)
                                     + " shapeY=" + (h * shapeYRatio)
                                     + " shapeX=" + (w * shapeXRatio)
-                                    + (landscape ? " (landscape" : " (portrait")
-                                    + (curveLive ? " curveLive)" : ")"));
+                                    + (landscape ? " (landscape)" : " (portrait)"));
                         } catch (Throwable t) {
                             Port.log("OneStepThresholds updateLayoutParams failed", t);
                         }
@@ -136,6 +136,10 @@ public final class OneStepThresholds {
         XposedHelpers.findAndHookMethod(mgrCls, "isInFloatWindowHot", noHotWhenFling);
 
         Port.log("OneStepThresholds installed");
+    }
+
+    private static float clamp(float v, float min, float max) {
+        return v < min ? min : (v > max ? max : v);
     }
 
     private OneStepThresholds() {}
