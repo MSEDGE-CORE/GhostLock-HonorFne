@@ -87,7 +87,18 @@ echo
 
 # ---------- 3/5 root 状态检查 ----------
 echo "[3/5] 检查 KernelSU 状态..."
-if "$ADB" shell "grep -q kernelsu /proc/modules" >/dev/null 2>&1; then
+# 无线 adb 单次 shell 瞬断(空响应)会把"已加载"误判为"未加载"而整跑
+# exploit——同 boot 重复 W2 的 slab_drain fork 风暴会触发系统保护性
+# 重启(295 用户 18:14 实测)。重试 3 次抗瞬断。
+KSU_LOADED=0
+for i in 1 2 3; do
+    if "$ADB" shell "grep -q kernelsu /proc/modules" >/dev/null 2>&1; then
+        KSU_LOADED=1
+        break
+    fi
+    [ "$i" -lt 3 ] && { echo "      检测无响应，重试($i/3)..."; sleep 5; }
+done
+if [ "$KSU_LOADED" = "1" ]; then
     echo "      KernelSU 已在运行，无需再次提权。"
     ensure_module
     # 上次运行可能超时误判"未落地"(模块已加载但 su 未就绪): 补齐安装/激活,

@@ -66,6 +66,15 @@ settle() {
 
 for try in 1 2 3 4 5 6 7 8; do
   $T600 adb wait-for-device 2>/dev/null; sleep 3
+  # 同 boot 已 root 守卫: kernelsu.ko 已加载 = 本 boot 提权已成功
+  # (run_root [3/5] 检测被无线 adb 瞬断绕过时由此兜底)。此时再跑 W2 =
+  # slab_drain 二次 fork 风暴(2000 fork, main.c:1338) -> 系统保护性
+  # 重启(295 用户 18:14 实测)。凭 /proc/modules 判定, 不看 getenforce:
+  # "Permissive 但无 KSU"(仅 W1 成)仍需正常重跑 W2。
+  if $T30 adb shell "grep -q kernelsu /proc/modules" 2>/dev/null; then
+    echo "=== KSU READY TRY $try (kernelsu already loaded this boot - skip exploit) ==="
+    exit 0
+  fi
   settle
   en=$($T30 adb shell getenforce 2>/dev/null | tr -d '\r')
   echo "=== TRY $try ADJ=$ADJ $(date +%T) getenforce=$en ==="
