@@ -212,8 +212,8 @@ public final class SystemUIHooks {
                 // 静态快照层的 alpha 动画只作驱动信号, 不再改写它本身:
                 // 强制 alpha=0 会污染 stock 淡入/淡出动画的起点值
                 // (进入闪一帧 0 模糊, 退出模糊度突变 0).
-                Port.log("blurProbe setAlpha t=" + android.os.SystemClock.uptimeMillis()
-                        + " a=" + param.args[0] + " vis=" + ((View) param.thisObject).getVisibility());
+                // Port.log("blurProbe setAlpha t=" + android.os.SystemClock.uptimeMillis()
+                //         + " a=" + param.args[0] + " vis=" + ((View) param.thisObject).getVisibility());
                 sBlurView = new WeakReference<View>((View) param.thisObject);
                 applyShadeBlur(shadeCtrlCls, (Float) param.args[0]);
                 ensureBlurLoop(shadeCtrlCls);
@@ -258,8 +258,8 @@ public final class SystemUIHooks {
                     "setExpandedFraction", float.class, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    Port.log("blurProbe fraction t=" + android.os.SystemClock.uptimeMillis()
-                            + " f=" + param.args[0]);
+                    // Port.log("blurProbe fraction t=" + android.os.SystemClock.uptimeMillis()
+                    //         + " f=" + param.args[0]);
                 }
             });
         } catch (Throwable t) {
@@ -271,8 +271,8 @@ public final class SystemUIHooks {
                     View.class, float.class, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    Port.log("blurProbe awb t=" + android.os.SystemClock.uptimeMillis()
-                            + " r=" + param.args[1]);
+                    // Port.log("blurProbe awb t=" + android.os.SystemClock.uptimeMillis()
+                    //         + " r=" + param.args[1]);
                 }
             });
         } catch (Throwable t) {
@@ -285,8 +285,8 @@ public final class SystemUIHooks {
                     boolean.class, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    Port.log("blurProbe startBlurAnim t=" + android.os.SystemClock.uptimeMillis()
-                            + " isIn=" + param.args[0]);
+                    // Port.log("blurProbe startBlurAnim t=" + android.os.SystemClock.uptimeMillis()
+                    //         + " isIn=" + param.args[0]);
                 }
             });
         } catch (Throwable t) {
@@ -627,7 +627,7 @@ public final class SystemUIHooks {
             sCurBlurRadius = r;
             // 不做去重: surface 重建会静默清掉实际半径, 必须逐帧重放
             XposedHelpers.callMethod(ctrl, "applyWindowBlur", shadeView, radius);
-            Port.log("shadeBlur a=" + alpha + " r=" + radius);
+            // Port.log("shadeBlur a=" + alpha + " r=" + radius);
         } catch (Throwable t) {
             Port.log("SystemUIHooks: applyShadeBlur failed", t);
         }

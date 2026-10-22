@@ -248,19 +248,19 @@ public final class ForceBlur {
                                 }
                                  // per-frame 探针: 仅调试时开 (帧路径 socket 写日志会阻塞主线程)
                                  if (Port.on(Port.KEY_WIN_DEBUG)) {
-                                     try {
-                                         Object probeMgr = param.thisObject;
-                                         float probeLast = XposedHelpers.getFloatField(
-                                                 probeMgr, "mLastBlurFraction");
-                                         int[] probePol = (int[]) XposedHelpers.getObjectField(
-                                                 probeMgr, "mPolicyValue");
-                                         Port.log("rBFProbe f=" + param.args[0] + " z="
-                                                 + param.args[1] + " last=" + probeLast
-                                                 + " pol0=" + (probePol == null ? -1 : probePol[0]));
-                                     } catch (Throwable t) {
-                                         Port.log("rBFProbe failed", t);
-                                     }
-                                 }
+                                      try {
+                                          Object probeMgr = param.thisObject;
+                                          float probeLast = XposedHelpers.getFloatField(
+                                                  probeMgr, "mLastBlurFraction");
+                                          int[] probePol = (int[]) XposedHelpers.getObjectField(
+                                                  probeMgr, "mPolicyValue");
+                                          // Port.log("rBFProbe f=" + param.args[0] + " z="
+                                          //         + param.args[1] + " last=" + probeLast
+                                          //         + " pol0=" + (probePol == null ? -1 : probePol[0]));
+                                      } catch (Throwable t) {
+                                          // Port.log("rBFProbe failed", t);
+                                      }
+                                  }
                                 if ((Float) param.args[0] != 0.0f) {
                                     return; // only intercept exit kills
                                 }

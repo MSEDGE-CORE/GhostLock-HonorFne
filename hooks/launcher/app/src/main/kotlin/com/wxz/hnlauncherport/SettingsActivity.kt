@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,6 +47,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -57,6 +59,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -133,6 +136,11 @@ private fun SettingsScreen() {
     }
     var tab by remember { mutableIntStateOf(0) }
     var pendingRestart by remember { mutableStateOf<String?>(null) }
+    var showUnlockDialog by remember { mutableStateOf(false) }
+
+    if (showUnlockDialog) {
+        UnlockAnimDialog(onDismiss = { showUnlockDialog = false })
+    }
 
     val restartTarget = pendingRestart
     if (restartTarget != null) {
@@ -281,7 +289,14 @@ private fun SettingsScreen() {
                         )
                     }
                     SettingsSection("动效") {
-                        motionRows.forEach { row -> SettingsSwitchItem(row, secure) }
+                        motionRows.forEach { row ->
+                            SettingsSwitchItem(
+                                row, secure,
+                                onRowClick = if (row.key == Port.KEY_ADV_UNLOCK_ANIM) {
+                                    { showUnlockDialog = true }
+                                } else null
+                            )
+                        }
                     }
                     SettingsSection("手势与行为") {
                         gestureRows.forEach { row -> SettingsSwitchItem(row, secure) }
@@ -404,7 +419,11 @@ private fun SettingsSection(label: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun SettingsSwitchItem(row: ToggleRow, secure: Boolean) {
+private fun SettingsSwitchItem(
+    row: ToggleRow,
+    secure: Boolean,
+    onRowClick: (() -> Unit)? = null
+) {
     val context = LocalContext.current
     var checked by remember { mutableStateOf(readKey(context, row.key)) }
 
@@ -412,6 +431,7 @@ private fun SettingsSwitchItem(row: ToggleRow, secure: Boolean) {
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(enabled = onRowClick != null) { onRowClick?.invoke() }
             .padding(vertical = 12.dp)
     ) {
         Column(Modifier.weight(1f)) {
@@ -442,6 +462,89 @@ private fun SettingsSwitchItem(row: ToggleRow, secure: Boolean) {
             enabled = secure
         )
     }
+}
+
+/**
+ * 自定义解锁动画参数 (高级解锁动画行点击弹出):
+ *  - 起始尺寸 (0.5-3): 覆盖 stock startScaleRatio (默认 1.8)
+ *  - 缩放锚点 (0-1): 扩散中心在屏高上的位置 (默认 0.3)
+ *  - 恢复默认: 锚点 0.3 + 起始尺寸 1.8; 取消不保存; 确定写入后下次解锁生效
+ */
+@Composable
+private fun UnlockAnimDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    var scale by remember {
+        mutableFloatStateOf(
+            Settings.Global.getFloat(
+                context.contentResolver, Port.KEY_ADV_UNLOCK_SCALE, 1.8f))
+    }
+    var anchor by remember {
+        mutableFloatStateOf(
+            Settings.Global.getFloat(
+                context.contentResolver, Port.KEY_ADV_UNLOCK_ANCHOR, 0.3f))
+    }
+    var delay by remember {
+        mutableFloatStateOf(
+            Settings.Global.getFloat(
+                context.contentResolver, Port.KEY_ADV_UNLOCK_DELAY, 30f).coerceIn(0f, 60f))
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("自定义解锁动画") },
+        text = {
+            Column {
+                Text("起始尺寸：" + String.format("%.1f", scale))
+                Slider(
+                    value = scale,
+                    valueRange = 0.5f..4f,
+                    steps = 34,
+                    onValueChange = { scale = it }
+                )
+                Spacer(Modifier.height(12.dp))
+                Text("缩放锚点：" + String.format("%.1f", anchor))
+                Slider(
+                    value = anchor,
+                    valueRange = 0f..1f,
+                    steps = 9,
+                    onValueChange = { anchor = it }
+                )
+                Spacer(Modifier.height(12.dp))
+                Text("分组透明度延时：" + String.format("%.0f", delay) + "ms")
+                Slider(
+                    value = delay,
+                    valueRange = 0f..60f,
+                    steps = 5,
+                    onValueChange = { delay = it }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val ok = Settings.Global.putFloat(
+                    context.contentResolver, Port.KEY_ADV_UNLOCK_SCALE, scale) &&
+                        Settings.Global.putFloat(
+                            context.contentResolver, Port.KEY_ADV_UNLOCK_ANCHOR, anchor) &&
+                        Settings.Global.putFloat(
+                            context.contentResolver, Port.KEY_ADV_UNLOCK_DELAY, delay)
+                Toast.makeText(
+                    context,
+                    if (ok) "已保存，下次解锁生效" else "写入失败（缺少权限）",
+                    Toast.LENGTH_SHORT
+                ).show()
+                onDismiss()
+            }) { Text("确定") }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = {
+                    scale = 1.8f
+                    anchor = 0.3f
+                    delay = 30f
+                }) { Text("恢复默认") }
+                TextButton(onClick = onDismiss) { Text("取消") }
+            }
+        }
+    )
 }
 
 /** 通过 root 整包禁用/恢复系统应用，开关状态实时查询 pm disabled 列表. */
