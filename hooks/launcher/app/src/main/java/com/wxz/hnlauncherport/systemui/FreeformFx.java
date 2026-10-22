@@ -35,9 +35,10 @@ import de.robv.android.xposed.XposedHelpers;
  *       而非 handleMotionEvent (部分路径被 MultiWindowGestureDetector 抢走).
  *  (G4) 角落缩放甩动挂角: 左下(9)/右下(10)角缩放松手, 窗口正在缩小且速度
  *       >=1000px/s -> 直接挂到对角.
- *  (G5) 底边快速上滑: 已进入橙色(最小缩放)状态时拦截关闭(reason=2),
- *       改走 onDragPositioningToMiniwindow 挂起为小窗.
- *  (G6) 挂起小窗左右角判定: 窗口中心 X < 屏宽 1/3 -> 左上, 其余 -> 右上
+ *  (G5) 底边快速上滑: 未到最小 -> 挂起为小窗; 已到最小(橙色) -> stock 关闭.
+ *  (G6) 挂起行为对调: 慢速滑到最小(橙色)松手 -> 关闭 (stock 为挂起);
+ *       快速挂起先 stashLive 传递平滑缩放 (动效优化);
+ *       挂起小窗左右角判定: 窗口中心 X < 屏宽 1/3 -> 左上, 其余 -> 右上
  *       (stock: 屏宽 1/2 对半分).
  *
  * KEY_FF_ANIM (悬浮窗动效优化):
@@ -117,6 +118,10 @@ public final class FreeformFx {
     private static final ThreadLocal<Float> sBallV0 = new ThreadLocal<>();
     /** 角落甩动已自行 stash 标记 (corner hook -> A1 stash hook) */
     private static final ThreadLocal<Boolean> sCornerExtra = new ThreadLocal<>();
+
+    private static final ThreadLocal<Boolean> sFastFling = new ThreadLocal<>();
+
+    private static final ThreadLocal<Boolean> sCloseGuard = new ThreadLocal<>();
     private static ClassLoader sCl;
     private static volatile boolean sPreFieldMissing;
 
@@ -235,8 +240,10 @@ public final class FreeformFx {
             }
         });
 
-        // (G5) 底边上滑: 已进入橙色(最小缩放)状态后松手, 无论速率一律挂起为小窗
-        // (stock: isFlingBottomZone 速率达标 -> onDragPositioningCancel(2) 关闭)
+        // (G5) 底边快速上滑: 未到最小(非橙色) -> 挂起为小窗; 已到最小(橙色)
+        // -> 放行 stock onDragPositioningCancel(2) 关闭 (滑到最小-关闭).
+        // 分类以松手缩放状态为准, 不依赖 stock 速度判定 (拖到最小的松手
+        // 速度常仍超阈值, 会被误判为快速上滑).
         XposedHelpers.findAndHookMethod(pos, "onDragPositioningCancel",
                 float.class, float.class, int.class, new XC_MethodHook() {
             @Override
@@ -245,31 +252,41 @@ public final class FreeformFx {
                     return;
                 }
                 if (((Integer) param.args[2]).intValue() != 2) {
-                    return; // 仅快速上滑关闭路径
+                    return; // 仅快速上滑路径
+                }
+                if (Boolean.TRUE.equals(sCloseGuard.get())) {
+                    return; // G6 慢速滑到最小 -> 关闭的内部调用, 放行 stock 关闭
                 }
                 try {
                     float cur = XposedHelpers.getFloatField(param.thisObject, "mCurScale");
                     float init = XposedHelpers.getFloatField(param.thisObject, "mInitialScale");
                     float mini = XposedHelpers.getFloatField(param.thisObject, "mMiniWindowScale");
-                    if (cur * init - mini >= 0.01f) {
-                        return; // 未达橙色状态, 保留原生快速上滑关闭行为
+                    if (cur * init - mini < 0.01f) {
+                        return; // 已到最小(橙色): 走 stock 关闭
                     }
-                    Object r = XposedHelpers.callMethod(param.thisObject,
-                            "onDragPositioningToMiniwindow", Boolean.TRUE);
+                    sFastFling.set(Boolean.TRUE);
+                    Object r;
+                    try {
+                        r = XposedHelpers.callMethod(param.thisObject,
+                                "onDragPositioningToMiniwindow", Boolean.TRUE);
+                    } finally {
+                        sFastFling.set(null);
+                    }
                     if (Boolean.TRUE.equals(r)) {
                         param.setResult(null); // 跳过关闭
-                        Port.log("FreeformFx: bottom fling orange -> miniform task="
+                        Port.log("FreeformFx: bottom fast fling -> miniform task="
                                 + positionerTaskId(param.thisObject));
                     }
                 } catch (Throwable t) {
-                    Port.log("FreeformFx: bottom orange override failed", t);
+                    Port.log("FreeformFx: bottom fast fling redirect failed", t);
                 }
             }
         });
 
-        // (G6) 挂起小窗左右角判定: 窗口中心 X < 屏宽 1/3 -> 左上(1), 其余 -> 右上(2)
-        // (stock: 屏宽 1/2 对半分). 复刻 stock onDragPositioningToMiniwindow 主体,
-        // 同时覆盖慢速上滑路径 (DragResizeInputListener) 与 G5 的重定向.
+        // (G6) 挂起行为对调: 快速上滑 -> 挂起 (跳过橙色校验); 慢速滑到最小(橙色)
+        // 松手 -> 关闭 (走 stock onDragPositioningCancel(2), 由 sCloseGuard 放行).
+        // 挂起左右角判定: 窗口中心 X < 屏宽 1/3 -> 左上(1), 其余 -> 右上(2)
+        // (stock: 屏宽 1/2 对半分).
         final Class<?> ffUtils = XposedHelpers.findClass(FF_UTILS_CLS, cl);
         XposedHelpers.findAndHookMethod(pos, "onDragPositioningToMiniwindow",
                 boolean.class, new XC_MethodHook() {
@@ -286,11 +303,26 @@ public final class FreeformFx {
                     if (XposedHelpers.getIntField(positioner, "mCtrlType") != 8) {
                         return;
                     }
-                    float cur = XposedHelpers.getFloatField(positioner, "mCurScale");
-                    float init = XposedHelpers.getFloatField(positioner, "mInitialScale");
-                    float mini = XposedHelpers.getFloatField(positioner, "mMiniWindowScale");
-                    if (cur * init - mini >= 0.01f) {
-                        return; // 未达橙色, 交回 stock (return false)
+                    boolean fast = Boolean.TRUE.equals(sFastFling.get());
+                    if (!fast) {
+                        float cur = XposedHelpers.getFloatField(positioner, "mCurScale");
+                        float init = XposedHelpers.getFloatField(positioner, "mInitialScale");
+                        float mini = XposedHelpers.getFloatField(positioner, "mMiniWindowScale");
+                        if (cur * init - mini >= 0.01f) {
+                            return; // 慢速未到最小, 交回 stock (settle)
+                        }
+                        // 慢速滑到最小(橙色) -> 关闭
+                        sCloseGuard.set(Boolean.TRUE);
+                        try {
+                            XposedHelpers.callMethod(positioner,
+                                    "onDragPositioningCancel", 0f, 0f, 2);
+                        } finally {
+                            sCloseGuard.set(null);
+                        }
+                        param.setResult(Boolean.TRUE);
+                        Port.log("FreeformFx: orange slow release -> close task="
+                                + positionerTaskId(positioner));
+                        return;
                     }
                     Object optional = XposedHelpers.getObjectField(
                             positioner, "mHnFreeformControllerOptional");
@@ -300,6 +332,9 @@ public final class FreeformFx {
                         return;
                     }
                     Object miniCtrl = XposedHelpers.callMethod(ctrl0, "getMiniformController");
+                    // 先快照 live bounds/scale (动效优化用); 本 hook 先于 A1b
+                    // stashHook 执行且随后重置 mCtrlType=0, A1b 会跳过, 故需自行 stash
+                    stashLive(positioner);
                     Object decor = XposedHelpers.getObjectField(positioner, "mWindowDecoration");
                     XposedHelpers.callMethod(decor, "setFrameThicknessColor", 1);
                     Rect curBounds = (Rect) XposedHelpers.getObjectField(
