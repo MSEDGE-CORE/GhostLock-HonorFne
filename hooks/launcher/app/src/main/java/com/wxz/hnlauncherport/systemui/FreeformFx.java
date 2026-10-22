@@ -40,6 +40,8 @@ import de.robv.android.xposed.XposedHelpers;
  *       快速挂起先 stashLive 传递平滑缩放 (动效优化);
  *       挂起小窗左右角判定: 窗口中心 X < 屏宽 1/3 -> 左上, 其余 -> 右上
  *       (stock: 屏宽 1/2 对半分).
+ *  (G7) 贴边最小化进圆球: 球 Y 由窗口垂直中心 Y 改为松手手指 Y
+ *       (= 小窗顶栏横向中心线 Y).
  *
  * KEY_FF_ANIM (悬浮窗动效优化):
  *  (A1) 拖拽结束快照 live bounds + live scale (mCurScale*mInitialScale).
@@ -69,6 +71,8 @@ public final class FreeformFx {
 
     private static final String FF_CTRL_CLS =
             "com.android.wm.shell.hnfreeform.HnFreeformController";
+    private static final String BALL_CTRL_CLS =
+            "com.android.wm.shell.hnfreeform.HnFloatBallController";
     private static final String FF_UTILS_CLS =
             "com.android.wm.shell.hnfreeform.HnFreeformUtils";
     private static final String MINI_CTRL_CLS =
@@ -108,6 +112,8 @@ public final class FreeformFx {
     private static final WeakHashMap<Object, float[]> sTrack = new WeakHashMap<>();
     /** 贴边命中方向 (onTouch UP -> isFlingToBall 同线程传递) */
     private static final ThreadLocal<Integer> sEdgeDir = new ThreadLocal<>();
+    /** 贴边命中松手手指 Y (onTouch UP -> onTaskMinimized 同线程传递), 球 Y 改顶栏中心线用 */
+    private static final ThreadLocal<Float> sBallY = new ThreadLocal<>();
     /** 贴边最小化 spring 初速度 {v0progress, atMs} (跨线程) */
     private static volatile float[] sMinimizeVel;
     /** startBoundsAnimator -> ValueAnimator.setInterpolator 同线程标记 */
@@ -390,6 +396,7 @@ public final class FreeformFx {
                     trackTouch(param.thisObject, ev.getRawX(), ev.getRawX(),
                             ev.getEventTime());
                     sEdgeDir.set(null);
+                    sBallY.set(null);
                 } else if (action == MotionEvent.ACTION_MOVE) {
                     trackTouch(param.thisObject, -1f, ev.getRawX(), ev.getEventTime());
                 } else if (action == MotionEvent.ACTION_UP) {
@@ -437,7 +444,34 @@ public final class FreeformFx {
                 }
                 Integer edge = sEdgeDir.get();
                 sEdgeDir.set(null);
-                param.setResult(edge != null ? edge : Integer.valueOf(-1));
+                 param.setResult(edge != null ? edge : Integer.valueOf(-1));
+             }
+         });
+
+        // (G7) 贴边最小化进圆球: 球 Y 由"拖动窗口垂直中心 Y"改为
+        // 松手手指 Y (= 小窗顶栏横向中心线 Y). 注意不能改写
+        // onTaskMinimized 的 Point 参数 —— stock handleMotionEvent 复用同一
+        // Point 构建缩球动画的起始 rect, 改它会破坏动画; 故在
+        // operateFloatBall 的 bundle 上仅覆盖最终球位置 positionY.
+        final Class<?> ballCtrl = XposedHelpers.findClass(BALL_CTRL_CLS, cl);
+        XposedHelpers.findAndHookMethod(ballCtrl, "operateFloatBall",
+                XposedHelpers.findClass("android.app.ActivityManager$RunningTaskInfo", cl),
+                String.class,
+                XposedHelpers.findClass("android.os.Bundle", cl),
+                new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                Float ballY = sBallY.get();
+                if (ballY == null) {
+                    return; // 非模块贴边路径 (如原生甩动), 保留 stock
+                }
+                sBallY.set(null);
+                Bundle bundle = (Bundle) param.args[2];
+                if (bundle == null || !bundle.containsKey("positionY")) {
+                    return;
+                }
+                bundle.putInt("positionY", (int) ballY.floatValue());
+                Port.log("FreeformFx: ball y=" + (int) ballY.floatValue());
             }
         });
     }
@@ -530,6 +564,7 @@ public final class FreeformFx {
         setLongFieldReflect(vm, "mDeltaTime", 100L);
         XposedHelpers.setBooleanField(listener, "mIsCtrlTopBar", true);
         sEdgeDir.set(Integer.valueOf(dir));
+        sBallY.set(Float.valueOf(ev.getRawY()));
         float v0 = (dir == 0 ? -vx : vx) / (maxBounds.width() * 0.4f);
         if (v0 < 0f) {
             v0 = 0f;
