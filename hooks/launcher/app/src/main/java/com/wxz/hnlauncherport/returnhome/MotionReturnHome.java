@@ -332,11 +332,11 @@ public final class MotionReturnHome {
                                 if (!motionEnabled() || !Port.on(Port.KEY_WIN_DEBUG)) {
                                     return; // per-frame 探针仅调试时开, 避免帧路径日志阻塞主线程
                                 }
-                                Port.log("MotionReverse tx=" + param.args[0]
-                                        + " ty=" + param.args[1]
-                                        + " s=" + param.args[2]
-                                        + " frac=" + param.args[5]
-                                        + " pv=" + param.args[6] + "," + param.args[7]);
+                            // Port.log("MotionReverse tx=" + param.args[0]
+                            //         + " ty=" + param.args[1]
+                            //         + " s=" + param.args[2]
+                            //         + " frac=" + param.args[5]
+                            //         + " pv=" + param.args[6] + "," + param.args[7]);
                             }
                         });
             }
@@ -357,15 +357,15 @@ public final class MotionReturnHome {
                             return;
                         }
                         try {
-                            Port.log("MotionLeash tx=" + XposedHelpers.getFloatField(p, "mTransX")
-                                    + " ty=" + XposedHelpers.getFloatField(p, "mTransY")
-                                    + " sx=" + XposedHelpers.getFloatField(p, "mScaleX")
-                                    + " sy=" + XposedHelpers.getFloatField(p, "mScaleY")
-                                    + " pv=" + XposedHelpers.getFloatField(p, "mPivotX")
-                                    + "," + XposedHelpers.getFloatField(p, "mPivotY")
-                                    + " a=" + XposedHelpers.getFloatField(p, "mCurAlpha"));
+                            // Port.log("MotionLeash tx=" + XposedHelpers.getFloatField(p, "mTransX")
+                            //         + " ty=" + XposedHelpers.getFloatField(p, "mTransY")
+                            //         + " sx=" + XposedHelpers.getFloatField(p, "mScaleX")
+                            //         + " sy=" + XposedHelpers.getFloatField(p, "mScaleY")
+                            //         + " pv=" + XposedHelpers.getFloatField(p, "mPivotX")
+                            //         + "," + XposedHelpers.getFloatField(p, "mPivotY")
+                            //         + " a=" + XposedHelpers.getFloatField(p, "mCurAlpha"));
                         } catch (Throwable t) {
-                            Port.log("MotionLeash dump failed", t);
+                            // Port.log("MotionLeash dump failed", t);
                         }
                     }
                 });
