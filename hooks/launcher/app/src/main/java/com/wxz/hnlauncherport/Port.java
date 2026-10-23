@@ -42,6 +42,7 @@ public final class Port {
     public static final String KEY_KG_HIDE_STEPS = "hn_port_kg_hide_steps"; // 1 = 隐藏锁屏左下角步数
     public static final String KEY_KG_NO_TOOLBOX = "hn_port_kg_no_toolbox"; // 1 = 禁用锁屏底部上滑工具菜单
     public static final String KEY_KG_SKIP_FACE_ANIM = "hn_port_kg_skip_face_anim"; // 1 = 跳过密码界面面部解锁成功动画
+    public static final String KEY_KG_SINGLE_TAP_WAKE = "hn_port_kg_single_tap_wake"; // 1 = 单击亮屏 (轻触屏幕以唤醒)
     public static final String KEY_NAV_HANDLE_NO_FOLLOW = "hn_port_nav_handle_no_follow"; // 1 = 禁用底部手势提示条跟手移动
     public static final String KEY_NAV_HANDLE_HIDE = "hn_port_nav_handle_hide"; // 1 = 隐藏手势提示条, 保留底部抬升(导航栏高度不变)
     public static final String KEY_FF_GESTURE = "hn_port_ff_gesture"; // 1 = 悬浮窗手势优化: 底部上滑挂起(不进圆球) + 拖窗贴边最小化(替换横滑甩动判定)

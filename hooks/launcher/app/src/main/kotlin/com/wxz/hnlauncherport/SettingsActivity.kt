@@ -12,6 +12,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -22,10 +25,12 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -33,6 +38,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -52,6 +58,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -72,7 +80,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.layout.onSizeChanged
@@ -198,50 +209,60 @@ private fun SettingsScreen() {
             Port.KEY_ICON_NO_LABEL)
     ) }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(when (tab) {
-                        0 -> "耀衍"
-                        1 -> "桌面"
-                        else -> "SystemUI"
-                    })
-                },
-            )
-        },
-        bottomBar = {
-            Box(Modifier.background(MaterialTheme.colorScheme.surfaceContainer)) {
-                NavigationBar(
-                    containerColor = Color.Transparent,
-                    tonalElevation = 0.dp,
-                    windowInsets = WindowInsets(0),
-                    modifier = Modifier.navigationBarsPadding()
-                ) {
-                    NavigationBarItem(
-                        selected = tab == 0,
-                        onClick = { tab = 0 },
-                        icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
-                        label = { Text("主页") }
-                    )
-                    NavigationBarItem(
-                        selected = tab == 1,
-                        onClick = { tab = 1 },
-                        icon = { Icon(Icons.Filled.Apps, contentDescription = null) },
-                        label = { Text("桌面") }
-                    )
-                    NavigationBarItem(
-                        selected = tab == 2,
-                        onClick = { tab = 2 },
-                        icon = { Icon(Icons.Filled.Android, contentDescription = null) },
-                        label = { Text("SystemUI") }
-                    )
+    val landscape = LocalConfiguration.current.orientation ==
+            Configuration.ORIENTATION_LANDSCAPE
+
+    Row(Modifier.fillMaxSize()) {
+        if (landscape) {
+            SettingsNavRail(tab) { tab = it }
+        }
+        Scaffold(
+            modifier = Modifier.weight(1f),
+            containerColor = MaterialTheme.colorScheme.background,
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Text(when (tab) {
+                            0 -> "耀衍"
+                            1 -> "桌面"
+                            else -> "SystemUI"
+                        })
+                    },
+                )
+            },
+            bottomBar = {
+                if (!landscape) {
+                    Box(Modifier.background(MaterialTheme.colorScheme.surfaceContainer)) {
+                        NavigationBar(
+                            containerColor = Color.Transparent,
+                            tonalElevation = 0.dp,
+                            windowInsets = WindowInsets(0),
+                            modifier = Modifier.navigationBarsPadding()
+                        ) {
+                            NavigationBarItem(
+                                selected = tab == 0,
+                                onClick = { tab = 0 },
+                                icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
+                                label = { Text("主页") }
+                            )
+                            NavigationBarItem(
+                                selected = tab == 1,
+                                onClick = { tab = 1 },
+                                icon = { Icon(Icons.Filled.Apps, contentDescription = null) },
+                                label = { Text("桌面") }
+                            )
+                            NavigationBarItem(
+                                selected = tab == 2,
+                                onClick = { tab = 2 },
+                                icon = { Icon(Icons.Filled.Android, contentDescription = null) },
+                                label = { Text("SystemUI") }
+                            )
+                        }
+                    }
                 }
             }
-        }
-    ) { padding ->
+        ) { padding ->
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
@@ -253,13 +274,7 @@ private fun SettingsScreen() {
                 )
                 .padding(bottom = padding.calculateBottomPadding())
         ) {
-            // 数学计算: 量取内容高与按钮高, spacer = viewport - content - buttons
-            // - 72dp (上下 gap 24*2 + 底 padding 24); 内容不足一屏时 spacer 撑起
-            // 把按钮压到内容区底部, 需要滚动时 spacer 为 0 按钮归入内容流末尾.
-            val density = LocalDensity.current
-            val viewportPx = with(density) { maxHeight.toPx() }
-            var contentPx by remember { mutableIntStateOf(0) }
-            var buttonsPx by remember { mutableIntStateOf(0) }
+            // 主页操作按钮: 归入内容流末尾 (不压底), 上方留 20dp 间距
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -268,11 +283,15 @@ private fun SettingsScreen() {
                 verticalArrangement = Arrangement.spacedBy(24.dp)
             ) {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onSizeChanged { contentPx = it.height }
+                modifier = Modifier.fillMaxWidth()
             ) {
-            when (tab) {
+            Crossfade(
+                targetState = tab,
+                animationSpec = tween(220, easing = FastOutSlowInEasing),
+                label = "tabFade"
+            ) { currentTab ->
+                Column {
+            when (currentTab) {
                 0 -> {
                     val appVersion = remember {
                         try {
@@ -313,6 +332,13 @@ private fun SettingsScreen() {
                         LinkItem("开发者", "MSEDGE", "https://github.com/MSEDGE-CORE")
                         LinkItem("Github 仓库", null, "https://github.com/MSEDGE-CORE/GhostLock-HonorFne")
                     }
+                    Spacer(Modifier.height(16.dp))
+                    ActionButton("重启 SystemUI") { pendingRestart = "systemui" }
+                    Spacer(Modifier.height(8.dp))
+                    ActionButton("重启桌面") { pendingRestart = "launcher" }
+                    Spacer(Modifier.height(8.dp))
+                    ActionButton("重启 AOD") { pendingRestart = "aod" }
+                    Spacer(Modifier.height(16.dp))
                 }
                 1 -> {
                     if (!secure) {
@@ -386,6 +412,10 @@ private fun SettingsScreen() {
                             "跳过面部解锁动画", "跳过密码界面面部解锁成功的笑脸动画，直接进入桌面",
                             Port.KEY_KG_SKIP_FACE_ANIM
                         ), true)
+                        SettingsSwitchItem(ToggleRow(
+                            "单击亮屏", "轻触屏幕以唤醒",
+                            Port.KEY_KG_SINGLE_TAP_WAKE
+                        ), true)
                     }
                     SettingsSection("悬浮窗") {
                         SettingsSwitchItem(ToggleRow(
@@ -419,24 +449,50 @@ private fun SettingsScreen() {
                         )
                     }
                 }
-            }
-            }
-            if (tab == 0) {
-                Spacer(Modifier.height(with(density) {
-                    max(0f, viewportPx - contentPx - buttonsPx - 72.dp.toPx()).toDp()
-                }))
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier
-                        .padding(horizontal = 20.dp)
-                        .onSizeChanged { buttonsPx = it.height }
-                ) {
-                    ActionButton("重启 SystemUI") { pendingRestart = "systemui" }
-                    ActionButton("重启桌面") { pendingRestart = "launcher" }
-                    ActionButton("重启 AOD") { pendingRestart = "aod" }
                 }
             }
             }
+            }
+            }
+        }
+    }
+    }
+}
+
+/** 横屏左侧导航栏: M3 NavigationRail 默认风格 (胶囊指示器自带形变动画). */
+@Composable
+private fun SettingsNavRail(currentTab: Int, onSelectTab: (Int) -> Unit) {
+    // 外层 Box 铺满背景 (延伸到状态栏/挖孔/导航栏背后), 内部 rail 透明并避开安全区
+    Box(
+        Modifier
+            .fillMaxHeight()
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+    ) {
+        NavigationRail(
+            containerColor = Color.Transparent,
+            modifier = Modifier
+                .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Left))
+                .statusBarsPadding()
+                .navigationBarsPadding()
+        ) {
+        NavigationRailItem(
+            selected = currentTab == 0,
+            onClick = { onSelectTab(0) },
+            icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
+            label = { Text("主页") }
+        )
+        NavigationRailItem(
+            selected = currentTab == 1,
+            onClick = { onSelectTab(1) },
+            icon = { Icon(Icons.Filled.Apps, contentDescription = null) },
+            label = { Text("桌面") }
+        )
+        NavigationRailItem(
+            selected = currentTab == 2,
+            onClick = { onSelectTab(2) },
+            icon = { Icon(Icons.Filled.Android, contentDescription = null) },
+            label = { Text("SystemUI") }
+        )
         }
     }
 }
@@ -607,7 +663,7 @@ private fun UnlockAnimDialog(onDismiss: () -> Unit) {
             }
         },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text("起始尺寸：" + String.format("%.1f", scale))
                 Slider(
                     value = scale,
@@ -703,7 +759,7 @@ private fun OneStepThresholdDialog(onDismiss: () -> Unit) {
             }
         },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text("竖屏X：" + String.format("%.2f", px))
                 Slider(
                     value = px,
@@ -857,7 +913,9 @@ private fun ActionButton(text: String, onClick: () -> Unit) {
     Button(
         onClick = onClick,
         shape = RoundedCornerShape(24.dp),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
     ) {
         Text(text)
     }

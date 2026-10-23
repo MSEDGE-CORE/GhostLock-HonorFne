@@ -367,10 +367,13 @@ public final class SystemUIHooks {
         // (7) 跳过密码界面面部解锁成功动画: 面部成功(10)时 stock 依次播
         // detect_animation_complete -> detect_animation_success (笑脸)
         // 后才 notifyKeyguardAuthenticated; 改为直接解锁.
+        // 仅密码(bouncer)界面生效 — 锁屏时钟界面人脸解锁保持原版动画.
         final Class<?> faceStateListenerCls = XposedHelpers.findClass(
                 "com.hihonor.keyguard.HwKeyguardAbsKeyInputView$FaceUnlockStateListener", cl);
         final Class<?> kgPolicyCls = XposedHelpers.findClass(
                 "com.hihonor.keyguard.inf.HwKeyguardPolicy", cl);
+        final Class<?> kgUpdateMonitorCls = XposedHelpers.findClass(
+                "com.hihonor.keyguard.HwKeyguardUpdateMonitor", cl);
         XposedHelpers.findAndHookMethod(faceStateListenerCls,
                 "startDetectCompletedAnimation", int.class, int.class, new XC_MethodHook() {
             @Override
@@ -381,13 +384,16 @@ public final class SystemUIHooks {
                 if (((Integer) param.args[0]).intValue() != 10) {
                     return; // 仅面部成功
                 }
+                if (!isInBouncer(kgUpdateMonitorCls)) {
+                    return; // 锁屏时钟界面: 保持原版
+                }
                 Object policy = XposedHelpers.callStaticMethod(kgPolicyCls, "getInst");
                 XposedHelpers.callMethod(policy, "notifyKeyguardAuthenticated");
                 param.setResult(null); // 跳过 complete + 笑脸动画
-                Port.log("SystemUIHooks: face success anim skipped, direct unlock");
+                Port.log("SystemUIHooks: face success anim skipped, direct unlock (bouncer)");
             }
         });
-        // 兜底: 若笑脸动画仍被其它路径直接触发, 同样直接解锁
+        // 兜底: 若笑脸动画仍被其它路径直接触发, 同样直接解锁 (仅 bouncer)
         XposedHelpers.findAndHookMethod(faceStateListenerCls,
                 "startDetectSuccessAnimation", new XC_MethodHook() {
             @Override
@@ -395,10 +401,89 @@ public final class SystemUIHooks {
                 if (!Port.on(Port.KEY_KG_SKIP_FACE_ANIM)) {
                     return;
                 }
+                if (!isInBouncer(kgUpdateMonitorCls)) {
+                    return; // 锁屏时钟界面: 保持原版
+                }
                 Object policy = XposedHelpers.callStaticMethod(kgPolicyCls, "getInst");
                 XposedHelpers.callMethod(policy, "notifyKeyguardAuthenticated");
                 param.setResult(null);
-                Port.log("SystemUIHooks: face success anim skipped (fallback)");
+                Port.log("SystemUIHooks: face success anim skipped (fallback, bouncer)");
+            }
+        });
+
+        // (8) 单击亮屏 (轻触屏幕以唤醒): TP 固件单击上报 keycode 716
+        // (双击 131 -> EasyWakeUpManager 亮屏, 滑动 613 -> doPowerWakeUp).
+        // stock AodApHost$3.onKey 对 716 仅 tapShowAod (显示AOD不亮屏);
+        // 开启后拦截 716 直接 doPowerWakeUp() 亮屏.
+        final Class<?> aodApHostCls = XposedHelpers.findClass(
+                "com.android.systemui.doze.AodApHost", cl);
+        try {
+            final Class<?> aodKeyListenerCls = XposedHelpers.findClass(
+                    "com.android.systemui.doze.AodApHost$3", cl);
+            XposedHelpers.findAndHookMethod(aodKeyListenerCls, "onKey",
+                    android.view.View.class, int.class, android.view.KeyEvent.class,
+                    new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    try {
+                        if (!Port.on(Port.KEY_KG_SINGLE_TAP_WAKE)) {
+                            return;
+                        }
+                        int keyCode = (Integer) param.args[1];
+                        android.view.KeyEvent event = (android.view.KeyEvent) param.args[2];
+                        if (keyCode != 716 || event.getAction() != 0) {
+                            return; // 仅单击按下
+                        }
+                        Object host = XposedHelpers.getObjectField(param.thisObject, "this$0");
+                        XposedHelpers.callMethod(host, "doPowerWakeUp");
+                        param.setResult(Boolean.TRUE);
+                        Port.log("SystemUIHooks: single tap wake (keycode 716)");
+                    } catch (Throwable t) {
+                        Port.log("SystemUIHooks: single tap wake failed", t);
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            // 兜底: 匿名类序号变化时 hook 具名方法 tapShowAod (716 分支入口)
+            XposedHelpers.findAndHookMethod(aodApHostCls, "tapShowAod", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    try {
+                        if (!Port.on(Port.KEY_KG_SINGLE_TAP_WAKE)) {
+                            return;
+                        }
+                        XposedHelpers.callMethod(param.thisObject, "doPowerWakeUp");
+                        param.setResult(Boolean.TRUE);
+                        Port.log("SystemUIHooks: single tap wake (tapShowAod)");
+                    } catch (Throwable t2) {
+                        Port.log("SystemUIHooks: single tap wake fallback failed", t2);
+                    }
+                }
+            });
+        }
+        // 清理旧方案残留: 恢复曾写入的 doze_tap_gesture 原值
+        final Class<?> nswvcCls = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.NotificationShadeWindowViewController", cl);
+        XposedHelpers.findAndHookMethod(nswvcCls, "setupExpandedStatusBar", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                try {
+                    android.view.View view = (android.view.View)
+                            XposedHelpers.getObjectField(param.thisObject, "mView");
+                    android.content.ContentResolver cr =
+                            view.getContext().getContentResolver();
+                    int orig = android.provider.Settings.Global.getInt(
+                            cr, "hn_port_kg_stw_orig", -1);
+                    if (orig != -1) {
+                        android.provider.Settings.Secure.putInt(
+                                cr, "doze_tap_gesture", orig);
+                        android.provider.Settings.Global.putInt(
+                                cr, "hn_port_kg_stw_orig", -1);
+                        Port.log("SystemUIHooks: doze_tap_gesture restored");
+                    }
+                } catch (Throwable t) {
+                    Port.log("SystemUIHooks: doze_tap_gesture restore failed", t);
+                }
             }
         });
 
@@ -702,6 +787,17 @@ public final class SystemUIHooks {
         if (v instanceof View) {
             ((View) v).setScaleX(1.0f);
             ((View) v).setScaleY(1.0f);
+        }
+    }
+
+    /** 密码(bouncer)界面判定: HwKeyguardUpdateMonitor.getInstance().isInBouncer(). */
+    private static boolean isInBouncer(Class<?> kgUpdateMonitorCls) {
+        try {
+            Object um = XposedHelpers.callStaticMethod(kgUpdateMonitorCls, "getInstance");
+            return ((Boolean) XposedHelpers.callMethod(um, "isInBouncer")).booleanValue();
+        } catch (Throwable t) {
+            Port.log("SystemUIHooks: isInBouncer failed", t);
+            return false;
         }
     }
 
