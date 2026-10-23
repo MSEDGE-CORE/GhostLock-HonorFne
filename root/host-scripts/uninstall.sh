@@ -30,8 +30,19 @@ if ! $T30 adb get-state >/dev/null 2>&1; then
     adb wait-for-device
 fi
 
-# root 状态检测：处于 root 状态则中止
-if $T30 adb shell "su 0 id" 2>/dev/null | grep -q "uid=0"; then
+# root 状态检测：处于 root 状态则中止。
+# 最多 2 次, 间隔 5s, 任一次命中即判有 root —— 抗 adb 单次瞬断(空响应)
+# 的假阴性: 瞬断会误判"无 root"并删掉运行中的链文件与已挂载模块。
+# 与 run_root.command / run_root.bat / run_w2.sh 同规则。
+ROOT_SEEN=0
+for i in 1 2; do
+    if $T30 adb shell "su 0 id" 2>/dev/null | grep -q "uid=0"; then
+        ROOT_SEEN=1
+        break
+    fi
+    [ "$i" -lt 2 ] && sleep 5
+done
+if [ "$ROOT_SEEN" = "1" ]; then
     echo "      [中止] 设备当前处于 root 状态，不能撤销。"
     echo "       临时 root 为 per-boot 性质：请先重启设备，待 root 清除后再运行撤销。"
     exit 1

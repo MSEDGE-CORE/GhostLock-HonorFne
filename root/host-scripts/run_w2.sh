@@ -12,6 +12,18 @@
 T30=""; T600=""
 command -v timeout >/dev/null 2>&1 && { T30="timeout 30"; T600="timeout 600"; }
 
+# KSU 检测: 最多 2 次, 间隔 5s, 任一次命中即本 boot 已加载 —— 抗 adb 单次
+# 瞬断(空响应)的假阴性, 否则会误跑 exploit 触发 slab_drain 保护性重启。
+# 与 run_root.command / run_root.bat / uninstall.sh 同规则。
+ksu_loaded() {
+  local i
+  for i in 1 2; do
+    $T30 adb shell "grep -q kernelsu /proc/modules" 2>/dev/null && return 0
+    [ "$i" -lt 2 ] && sleep 5
+  done
+  return 1
+}
+
 E="/data/local/tmp/e"
 SYNC="GL_AIM_DM=1 GL_W1_ATTEMPTS=2 GL_ROUTE_ATTEMPTS=1 GL_HOLD_CHAIN=1 GL_HOLD_WAITER=1 GL_PUNCH_IN_WINDOW=1 GL_PUNCH_DELAY_USEC=0 GL_MCAST_ROUTE=1 GL_PROBE_BOOTID=0 GL_SPRAY_TEST=0 GL_STAMP_SYNC=1"
 
@@ -70,8 +82,9 @@ for try in 1 2 3 4 5 6 7 8; do
   # (run_root [3/5] 检测被无线 adb 瞬断绕过时由此兜底)。此时再跑 W2 =
   # slab_drain 二次 fork 风暴(2000 fork, main.c:1338) -> 系统保护性
   # 重启(295 用户 18:14 实测)。凭 /proc/modules 判定, 不看 getenforce:
-  # "Permissive 但无 KSU"(仅 W1 成)仍需正常重跑 W2。
-  if $T30 adb shell "grep -q kernelsu /proc/modules" 2>/dev/null; then
+  # "Permissive 但无 KSU"(仅 W1 成)仍需正常重跑 W2。ksu_loaded() 内含
+  # 2 次检测(间隔 5s)抗瞬断, 与入口脚本同规则。
+  if ksu_loaded; then
     echo "=== KSU READY TRY $try (kernelsu already loaded this boot - skip exploit) ==="
     exit 0
   fi

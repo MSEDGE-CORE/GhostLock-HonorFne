@@ -487,6 +487,37 @@ public final class SystemUIHooks {
             }
         });
 
+        // 单击亮屏后补启人脸检测: 电源键亮屏时 system_server 会在亮屏前
+        // 经 binder 预调 KeyguardService.doFaceRecognize("FCDT-POWERKEY");
+        // 本模块单击亮屏 (AodHooks 反射 wakeUp) 缺少该调用, 人脸不启动.
+        // 在 handleStartedWakingUp 后检查 WakeUpReason, 若来自本模块则补调
+        // faceDetectWithWakingUp, 复用电源键 reason 使 isDetectByPower() 成立.
+        final Class<?> kumCls = XposedHelpers.findClass(
+                "com.android.keyguard.KeyguardUpdateMonitor", cl);
+        XposedHelpers.findAndHookMethod(kumCls, "handleStartedWakingUp", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                try {
+                    if (!Port.on(Port.KEY_KG_SINGLE_TAP_WAKE)) {
+                        return;
+                    }
+                    android.content.Context ctx = (android.content.Context)
+                            XposedHelpers.getObjectField(param.thisObject, "mContext");
+                    String wakeReason = android.provider.Settings.Global.getString(
+                            ctx.getContentResolver(), "WakeUpReason");
+                    if (wakeReason == null
+                            || !wakeReason.startsWith("HnPort SINGLE_TAP_WAKE")) {
+                        return;
+                    }
+                    XposedHelpers.callMethod(param.thisObject,
+                            "faceDetectWithWakingUp", "FCDT-POWERKEY");
+                    Port.log("SystemUIHooks: face detect after single tap wake");
+                } catch (Throwable t) {
+                    Port.log("SystemUIHooks: face detect after tap wake failed", t);
+                }
+            }
+        });
+
         // 杂志锁屏路径: MagazineDetailView.isInterestedEvent (mTouchMode=6 lift)
         final Class<?> magazineDetailCls = XposedHelpers.findClass(
                 "com.android.keyguard.hwlockscreen.magazine.MagazineDetailView", cl);

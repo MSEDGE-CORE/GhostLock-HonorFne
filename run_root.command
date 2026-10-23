@@ -89,14 +89,15 @@ echo
 echo "[3/5] 检查 KernelSU 状态..."
 # 无线 adb 单次 shell 瞬断(空响应)会把"已加载"误判为"未加载"而整跑
 # exploit——同 boot 重复 W2 的 slab_drain fork 风暴会触发系统保护性
-# 重启(295 用户 18:14 实测)。重试 3 次抗瞬断。
+# 重启(295 用户 18:14 实测)。最多 2 次检测抗瞬断(与 run_root.bat /
+# run_w2.sh / uninstall.sh 同规则: 间隔 5s, 任一次命中即判已加载)。
 KSU_LOADED=0
-for i in 1 2 3; do
+for i in 1 2; do
     if "$ADB" shell "grep -q kernelsu /proc/modules" >/dev/null 2>&1; then
         KSU_LOADED=1
         break
     fi
-    [ "$i" -lt 3 ] && { echo "      检测无响应，重试($i/3)..."; sleep 5; }
+    [ "$i" -lt 2 ] && { echo "      检测无响应，重试($i/2)..."; sleep 5; }
 done
 if [ "$KSU_LOADED" = "1" ]; then
     echo "      KernelSU 已在运行，无需再次提权。"

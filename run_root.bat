@@ -61,8 +61,26 @@ echo.
 
 rem ---------- 3/5 root 状态检查 ----------
 echo [3/5] 检查 KernelSU 状态...
+rem 无线 adb 单次 shell 瞬断(空响应)会把"已加载"误判为"未加载"而整跑
+rem exploit, 同 boot 重复 W2 的 slab_drain fork 风暴会触发系统保护性重启。
+rem 最多 2 次检测抗瞬断(与 run_root.command / run_w2.sh 同规则)。
+rem goto 循环而非 for 块: 块内 %errorlevel%/%VAR% 有延迟展开坑。
+set "KSU_TRIES=0"
+set "KSU_LOADED=0"
+:ksu_chk
 adb shell "grep -q kernelsu /proc/modules" >nul 2>nul
 if not errorlevel 1 (
+    set "KSU_LOADED=1"
+    goto :ksu_done
+)
+set /a KSU_TRIES+=1
+if %KSU_TRIES% LSS 2 (
+    echo       检测无响应，重试(%KSU_TRIES%/2)...
+    ping -n 6 127.0.0.1 >nul
+    goto :ksu_chk
+)
+:ksu_done
+if "%KSU_LOADED%"=="1" (
     echo       KernelSU 已在运行，无需再次提权。
     call :ensure_module
     rem 上次运行可能超时误判"未落地"(模块已加载但 su 未就绪): 补齐安装/激活,
