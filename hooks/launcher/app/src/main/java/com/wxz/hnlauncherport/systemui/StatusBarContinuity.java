@@ -4,6 +4,7 @@ import android.animation.Animator;
 import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
 import android.animation.TimeInterpolator;
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
@@ -12,9 +13,9 @@ import android.graphics.Rect;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
+import android.view.animation.PathInterpolator;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
-import android.view.animation.PathInterpolator;
 
 import com.wxz.hnlauncherport.Port;
 
@@ -37,8 +38,14 @@ import de.robv.android.xposed.XposedHelpers;
  * Bitmap (分割线 = system_icon_area 左缘, 兜底电池左缘/0.6w, 只画内容容器避开栏背景),
  * 两个 ImageView 挂面板栏父容器 (mQuickSettingsContainer, FrameLayout) 顶层; 跟手期
  * 位图为唯一可见 (面板 contents alpha 0) → 运营商/杂项/时钟/隐私胶囊与真实栏设置像素级
- * 同步. settle 阈值: 位图→0 / contents→1 交叉淡化 (applyTint(sPanelTint) 在 contents
- * 不可见时切 → 无闪); collapse 阈值镜像交叉淡化, 无任何 tint 硬切 (第二轮 "收起闪" 根因).
+ * 同步. settle (展开提交, 手指可能未抬): 跟手贯穿 — SETTLING 仍由 onMove 手指-进度
+ * 映射驱动 (不与卡片进入动画绑定), 真实 CC 栏仅在进度100 (p≥0.999) 由 applyProgress
+ * 内联接替 (tint 先切→contents 复显→复制层瞬隐, 可逆), 松手 (含 fling 展开未达位)
+ * 按手指速率 (剩余距离/|速率|, 恒速线性) 续接未达部分; collapse 阈值镜像
+ * 1 帧硬切 (位图接管/栏瞬隐), 位图像素本身即真实色, 无 tint 硬切闪, 漂移同样速率续接.
+ * 旋转: engage 检测 rotation 变更 → 复刻 stock 位置定义
+ * (callMethod updateStatusBarPaddings, 内部按实际 rotation 分支) + 强制重排;
+ * 且层基准初始 X 与上次不同 (旋转后首拉) → 静态手势: 位移全冻结, 复制层不动.
  * 位图缓存跨循环 re-engage 复用 (此时真实栏已被 disable 隐藏).
  *
  * 左右收窄 (0.1, 容器级, 与运营商显示无关):
@@ -94,10 +101,12 @@ public final class StatusBarContinuity {
     /** 收尾停靠: 停靠真实栏位置, 轮询真实栏内容重现后硬切 (点6). */
     private static final int WAITING_REAL = 6;
 
-    private static final long SETTLE_MS = 200L;
-    private static final long DROP_MS = 200L;
-    /** 点6: swap 轮询间隔与上限 (~500ms). */
-    private static final long POLL_MS = 33L;
+    private static final int POLL_MS = 33;
+    /** 收起漂移固定时长 (用户定 0.5s). */
+    private static final long COLLAPSE_DRIFT_MS = 300L;
+    /** spring 全局参数 (所有状态栏移动/跟手): SPRING_DUR=时标(ms), SPRING_K=整体系数. */
+    private static final float SPRING_DUR = 300f;
+    private static final float SPRING_K = 1.0f;
     private static final int POLL_MAX = 15;
     private static final TimeInterpolator FOSI =
             new PathInterpolator(0.4f, 0f, 0.2f, 1f);
@@ -107,8 +116,8 @@ public final class StatusBarContinuity {
     private static volatile boolean sOffsetValidated = false;
     private static WeakReference<View> sRealBar = new WeakReference<View>(null);
     private static WeakReference<View> sTarget = new WeakReference<View>(null);
-    /** 当前相位动画 (settle/collapse/drop), 换相/engage 时取消. */
-    private static AnimatorSet sPhaseAnim;
+    /** 当前相位动画 (settle 占位/collapse/drop), 换相/engage 时取消. */
+    private static Animator sPhaseAnim;
     private static Field sTouchAreaField;
     private static Class<?> sNotchUtilsCls;
     private static Class<?> sPhoneSbUtilsCls;
@@ -164,6 +173,58 @@ public final class StatusBarContinuity {
     private static volatile boolean sFingerDown;
     /** engage/接管放弃原因 (去重日志, 变化才打 — issue1 循环不复现定位). */
     private static String sLastBail = "";
+    /** 当前进度 p (0=真实栏位, 1=面板自然位); 真实 CC 栏接替阈值 = 1 (进度100). */
+    private static volatile float sProgress;
+    /** 进度≥0.999 时真实 CC 栏已接替 (复制层瞬隐); 回落再切回复制栏. */
+    private static boolean sRevealed;
+    /** 手指速率 (px/ms, 平滑) 与上次 MOVE 采样: 松手续接动画时长依据. */
+    private static volatile float sVelY;
+    private static float sLastMoveY;
+    private static long sLastMoveT;
+    /** 旋转 token: engage 时变化则复刻 stock 按 rotation 的状态栏位置定义. */
+    private static int sLastRotation = -1;
+    /** 静态手势 (旋转后首拉: 初始 X 变更): 位移全冻结, 复制层不移动. */
+    private static boolean sStaticGesture;
+    /** 上次 engage 层基准初始 X: 旋转识别 token (本次与上次不同 → 静态手势). */
+    private static float sLastEngageBaseX = Float.MIN_VALUE;
+    /** 上次 engage 屏宽: 旋转识别 token (屏宽变更 → 静态手势, 与位图无关). */
+    private static int sLastEngageW = -1;
+    /** 跟手 spring 追踪 (进度域): 目标=手指进度, 帧循环二阶弹簧逼近 (ω=2πk·1000/dur). */
+    private static float sSpringP;
+    private static float sSpringVel;
+    private static float sSpringTarget;
+    private static long sSpringLastT;
+    private static boolean sSpringRunning;
+    private static final Runnable sSpringRunner = new Runnable() {
+        @Override
+        public void run() {
+            View bar = sTarget.get();
+            if (bar == null || !sSpringRunning
+                    || (sState != FOLLOWING && sState != SETTLING)) {
+                sSpringRunning = false;
+                return;
+            }
+            long now = android.os.SystemClock.uptimeMillis();
+            float dt = Math.min((now - sSpringLastT) / 1000f, 0.032f);
+            sSpringLastT = now;
+            float omega = 2f * (float) Math.PI * 1000f * SPRING_K / SPRING_DUR;
+            float zeta = 0.8f; // 欠阻尼微弹 (内置)
+            float a = omega * omega * (sSpringTarget - sSpringP)
+                    - 2f * zeta * omega * sSpringVel;
+            sSpringVel += a * dt;
+            sSpringP += sSpringVel * dt;
+            if (Math.abs(sSpringTarget - sSpringP) < 0.0008f
+                    && Math.abs(sSpringVel) < 0.01f) {
+                sSpringP = sSpringTarget;
+                sSpringVel = 0f;
+                sSpringRunning = false;
+            }
+            applyProgress(bar, sSpringP);
+            if (sSpringRunning) {
+                bar.postOnAnimation(this);
+            }
+        }
+    };
     /** collapse 漂移保险: 自启 set 若意外停滞, 超时强制收尾 (防 COLLAPSING 卡死). */
     private static final Runnable sCollapseWatch = new Runnable() {
         @Override
@@ -320,7 +381,7 @@ public final class StatusBarContinuity {
     private static void onMove(XC_MethodHook.MethodHookParam param) {
         boolean enabled = Port.on(Port.KEY_CC_STATUSBAR_CONTINUITY);
         if (!enabled) {
-            if (sState == FOLLOWING || sState == COLLAPSING
+            if (sState == FOLLOWING || sState == SETTLING || sState == COLLAPSING
                     || sState == DROPPING || sState == WAITING_REAL) {
                 View bar = sTarget.get();
                 if (bar != null) {
@@ -333,7 +394,10 @@ public final class StatusBarContinuity {
             return;
         }
         float y = (Float) param.args[0];
-        if (sState == FOLLOWING) {
+        trackVelocity(y);
+        // 跟手: FOLLOWING 与 SETTLING (展开提交后手指未抬) 都手指映射 —
+        // settle 切换不冻结跟手, 不与卡片进入动画绑定
+        if (sState == FOLLOWING || sState == SETTLING) {
             View bar = sTarget.get();
             if (bar == null) {
                 sState = IDLE;
@@ -349,7 +413,20 @@ public final class StatusBarContinuity {
         if (sState == IDLE || sState == DROPPING || sState == WAITING_REAL) {
             tryEngage(param.thisObject, y);
         }
-        // SETTLING/SETTLED: 展开态, 由一次性 hook 接管
+        // SETTLED: 静止展开态
+    }
+
+    /** 手指速率跟踪 (px/ms, 平滑): 松手动画 "相同速率续接" 时长依据. */
+    private static void trackVelocity(float y) {
+        long t = android.os.SystemClock.uptimeMillis();
+        float dy = y - sLastMoveY;
+        long dt = t - sLastMoveT;
+        if (dt >= 8L && Math.abs(dy) < 4000f) {
+            float v = dy / (float) dt;
+            sVelY = 0.6f * v + 0.4f * sVelY;
+        }
+        sLastMoveY = y;
+        sLastMoveT = t;
     }
 
     /**
@@ -401,11 +478,16 @@ public final class StatusBarContinuity {
     }
 
     private static void follow(Object ctrl, View bar, float y) {
-        if (showingType(ctrl) != 0) {
-            return; // 展开一次性已接管 (同一 MOVE 内 stock 先触发, 状态已切)
-        }
-        if (!canSwipe(ctrl)) {
-            return;
+        // SETTLING 绕过 showingType/canSwipe 门: 展开提交后面板已显示
+        // (showingType!=0) 但手指未抬仍连续手指映射 — settle 切换跟手贯穿,
+        // 不与 stock 卡片进入动画绑定.
+        if (sState != SETTLING) {
+            if (showingType(ctrl) != 0) {
+                return; // 展开一次性已接管 (同一 MOVE 内 stock 先触发, 状态已切)
+            }
+            if (!canSwipe(ctrl)) {
+                return;
+            }
         }
         if (!sShiftsFresh) {
             // 清掉跟手骑乘的分组位移保证锚测量纯净; ride 随后按新值重挂
@@ -425,13 +507,101 @@ public final class StatusBarContinuity {
         float pull = y - initialY;
         float threshold = XposedHelpers.getIntField(ctrl, "mDistanceForExpand");
         float p = (threshold > 0f && pull > 0f) ? Math.min(pull / threshold, 1f) : 0f;
-        ride(bar, p);
+        springTo(bar, p);
     }
 
-    /** p: 0=真实栏位置, 1=面板自然位. 整栏 ty + contents 分组横移 + 位图半层一起骑乘. */
+    /** 跟手 spring 追踪: 目标=手指进度; 未运行则起帧循环 (FOLLOWING/SETTLING). */
+    private static void springTo(View bar, float target) {
+        sSpringTarget = target;
+        if (!sSpringRunning) {
+            sSpringRunning = true;
+            sSpringLastT = android.os.SystemClock.uptimeMillis();
+            bar.postOnAnimation(sSpringRunner);
+        }
+    }
+
+    /**
+     * 进度统一应用: 位置 ride(p) + 进度100 真栏接替内联切换 (可逆).
+     * p≥0.999 (进度100): tint 先切 (contents 不可见时) 再复显真实 CC 栏,
+     * 复制层瞬隐; 回落: 复制层瞬显 + contents 重新隐藏 — 接替由进度驱动,
+     * 与 stock 卡片进入动画完全解耦.
+     */
+    private static void applyProgress(View bar, float p) {
+        sProgress = p;
+        boolean full = p >= 0.999f;
+        if (full && !sRevealed) {
+            sRevealed = true;
+            View pc = getPanelContents(bar);
+            applyTint(pc, sPanelTint); // contents 不可见时切换 → 无闪
+            bar.setAlpha(1f);
+            bar.setTranslationY(0f);
+            resetGroupShifts(bar); // 分组精确归零 (p≈1 本已 0, 双保险)
+            restoreContentsAlpha(bar);
+            setLayersAlpha(0f);
+            if (sStaticGesture) {
+                // 旋转首拉: reveal 后 (面板已提交重排) 下一帧几何恢复可信 →
+                // 重测并把复制层刷到 settle 位, 本次收起即用正确几何
+                bar.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        refreshStaticGeometry(bar);
+                    }
+                });
+            }
+            Port.log(TAG + ": reveal (progress 100)");
+        } else if (!full && sRevealed) {
+            sRevealed = false;
+            bar.setAlpha(1f);
+            hidePanelContents(bar);
+            ride(bar, p);
+            setLayersAlpha(1f);
+            Port.log(TAG + ": re-copy (progress " + p + ")");
+        } else {
+            ride(bar, p);
+        }
+    }
+
+    private static void setLayersAlpha(float alpha) {
+        ImageView l = sLeftLayer.get();
+        if (l != null) {
+            l.setAlpha(alpha);
+        }
+        ImageView r = sRightLayer.get();
+        if (r != null) {
+            r.setAlpha(alpha);
+        }
+    }
+
+    /**
+     * 静态手势 (旋转首拉) 几何刷新: 面板已展开重排 → 直接测量可信时重测
+     * offset/收窄/基准, 并把复制层刷到 settle 位 (p=1, 真栏 reveal 所在处)
+     * — 本次收起即用正确几何漂移. 测量不可信 (布局未就绪) 则保持冻结.
+     */
+    private static void refreshStaticGeometry(View bar) {
+        if (!sStaticGesture || !sRevealed
+                || (sState != SETTLING && sState != SETTLED)) {
+            return; // 未 reveal (跟手期冻结一致) 或非静态手势: 不刷
+        }
+        float direct = measureOffsetDirect(bar);
+        if (direct <= 0f) {
+            return; // 布局仍未就绪: 保持冻结 (收起前再试)
+        }
+        sOffset = direct;
+        sOffsetValidated = true;
+        sShiftsFresh = captureShifts(bar);
+        measureBase(bar);
+        rideLayers(1f); // 复制层 → settle 位 (本次收起的漂移起点)
+        sStaticGesture = false;
+        Port.log(TAG + ": static geometry refreshed offset=" + sOffset
+                + " dxL=" + sLeftShift + " dxR=" + sRightShift);
+    }
+
+    /** p: 0=真实栏位置, 1=面板自然位. 位图可用: 仅复制层骑乘 (CC 栏 contents 隐藏, 不位移); 降级: 栏 ty + 分组横移即连贯本体. */
     private static void ride(View bar, float p) {
-        bar.setTranslationY(-sOffset * (1f - p));
-        rideGroups(bar, p);
+        if (!sBmpOk) {
+            bar.setTranslationY(-sOffset * (1f - p));
+            rideGroups(bar, p);
+        }
         rideLayers(p);
     }
 
@@ -466,6 +636,29 @@ public final class StatusBarContinuity {
      */
     private static void engage(View bar) {
         boolean cycle = sBmpOk;
+        // 旋转检测 (需求2): 位置定义复刻 — HwStatusbarContents
+        // .updateStatusBarPaddings 内部按实际 getRotation() 分支取
+        // PhoneStatusBarUtils 的 start/end/top padding (横竖屏各自定义);
+        // GONE 面板树不随旋转重刷 → 旋转变更时手动复刻 + 强制重排,
+        // 首次手势位置即新方向 (修横屏 dxL=311/dxR=-221 旧 padding 残留).
+        int rot = currentRotation(bar);
+        if (rot != -1 && rot != sLastRotation) {
+            boolean changed = sLastRotation != -1;
+            sLastRotation = rot;
+            if (changed) {
+                try {
+                    View pc0 = getPanelContents(bar);
+                    if (pc0 != null) {
+                        XposedHelpers.callMethod(pc0, "updateStatusBarPaddings");
+                    }
+                } catch (Throwable t) {
+                    Port.log(TAG + ": rotation paddings refresh failed", t);
+                }
+                forceRelayoutPanelBar(bar);
+                sShiftsFresh = false;
+                Port.log(TAG + ": rotation changed -> paddings refreshed rot=" + rot);
+            }
+        }
         // 旋转后首次手势: GONE 面板树不随旋转重排 (栏+父链全旧方向几何) →
         // 沿祖先链自顶向下强制重排 → offset(X,Y)/shift 首次手势当场实测,
         // 复制层从 p=0 即收敛, 不依赖第二次手势. 必须先于 resolveOffset.
@@ -482,6 +675,14 @@ public final class StatusBarContinuity {
             }
         }
         sOffset = resolveOffset(bar);
+        // 进度模型复位: 新手势从进度0/未接替/零速率开始
+        sProgress = 0f;
+        sRevealed = false;
+        sVelY = 0f;
+        sSpringP = 0f;
+        sSpringVel = 0f;
+        sSpringTarget = 0f;
+        sSpringRunning = false;
         sTarget = new WeakReference<View>(bar);
         restoreContentsAlpha(bar); // 先复位上次隐藏, 防把中间值当原值
         restoreClip();             // 同上, 防重复记录
@@ -492,6 +693,33 @@ public final class StatusBarContinuity {
         }
         attachLayers(bar);
         sShiftsFresh = captureShifts(bar);
+        // 旋转识别 (需求2, 双判定): ① 屏宽变更 (旋转必变, 与位图无关);
+        // ② 层基准初始 X 变更. 任一命中 → 几何不信任 (旋转后首拉, 缩进/
+        // offset 实测不可靠) — 本次手势冻结: 收窄/offset 全零, settle 位置 =
+        // 当前位置, 复制层不移动 (宁可不动不错位); 下次手势同方向一致 →
+        // 恢复正常连贯.
+        int engageW = bar.getResources().getDisplayMetrics().widthPixels;
+        boolean widthChanged = sLastEngageW != -1 && engageW != sLastEngageW;
+        sLastEngageW = engageW;
+        boolean baseXChanged = sBmpOk && sLastEngageBaseX != Float.MIN_VALUE
+                && Math.abs(sBaseLeftTx - sLastEngageBaseX) > 0.5f;
+        if (sBmpOk) {
+            sLastEngageBaseX = sBaseLeftTx;
+        }
+        sStaticGesture = widthChanged || baseXChanged;
+        if (sStaticGesture) {
+            sLeftShift = 0f;
+            sRightShift = 0f;
+            sOpShift = 0f;
+            sClockShift = 0f;
+            sUnstableShift = 0f;
+            sIconShift = 0f;
+            sShiftsFresh = true; // 冻结位移: 防 follow 重测覆盖
+            sOffset = 0f;
+            sOffsetValidated = true; // 防 follow 静默校正覆盖
+            Port.log(TAG + ": static gesture (widthChanged=" + widthChanged
+                    + " baseXChanged=" + baseXChanged + ")");
+        }
         hidePanelContents(bar);
         disableClip(bar);
         captureTintStatics(bar);
@@ -1103,25 +1331,25 @@ public final class StatusBarContinuity {
      * 与位图半层 base+shift*p 的 X 骑乘对齐, contents 淡入/淡出时同步横移.
      */
     private static void addGroupShiftAnims(View bar, ArrayList<Animator> anims,
-            boolean toZero, long ms) {
+            boolean toZero, long ms, TimeInterpolator ip) {
         View pc = getPanelContents(bar);
         if (pc == null) {
             return;
         }
         float lo = toZero ? 0f : -sOpShift;
-        addOneGroupAnim(sOperatorId == 0 ? null : pc.findViewById(sOperatorId), lo, anims, ms);
+        addOneGroupAnim(sOperatorId == 0 ? null : pc.findViewById(sOperatorId), lo, anims, ms, ip);
         addOneGroupAnim(sClockId == 0 ? null : pc.findViewById(sClockId),
-                toZero ? 0f : -sClockShift, anims, ms);
+                toZero ? 0f : -sClockShift, anims, ms, ip);
         addOneGroupAnim(sUnstableId == 0 ? null : pc.findViewById(sUnstableId),
-                toZero ? 0f : -sUnstableShift, anims, ms);
+                toZero ? 0f : -sUnstableShift, anims, ms, ip);
         addOneGroupAnim(sIconAreaId == 0 ? null : pc.findViewById(sIconAreaId),
-                toZero ? 0f : -sIconShift, anims, ms);
+                toZero ? 0f : -sIconShift, anims, ms, ip);
     }
 
     private static void addOneGroupAnim(View v, float to,
-            ArrayList<Animator> anims, long ms) {
+            ArrayList<Animator> anims, long ms, TimeInterpolator ip) {
         if (v != null && v.getTranslationX() != to) {
-            anims.add(objAnim(v, "translationX", v.getTranslationX(), to, ms));
+            anims.add(objAnim(v, "translationX", v.getTranslationX(), to, ms, ip));
         }
     }
 
@@ -1266,13 +1494,15 @@ public final class StatusBarContinuity {
     }
 
     /**
-     * 展开 settle: 整栏 ty→0; contents 先隐形切 tint (无闪) 再 1 帧硬切复显
-     * (阈值交接不做透明度 — 用户要求), 位图半层同帧 alpha 归 0 并骑到自然位;
-     * 位置骑乘 (ty/tx/组移) 保留, 交接瞬间两态同位无缝.
+     * 展开 settle (进度=100 提交点, 手指可能未抬): 跟手贯穿 — 随后的
+     * onMove(SETTLING) 继续手指-进度映射, 真实 CC 栏仅在进度100 (p≥0.999)
+     * 由 applyProgress 内联接替, 与 stock 卡片进入动画完全解耦 (不等待其结束).
+     * 返回空占位动画: 阻断 stock 原生 alpha 0→1 抖动; 手指已抬的程序化展开
+     * 由占位 update (线性 0→1) 驱动同一进度模型.
      */
     private static void onSettle(final View bar, XC_MethodHook.MethodHookParam param) {
-        if (sState != FOLLOWING && sState != SETTLING && sState != COLLAPSING
-                && sState != DROPPING && sState != WAITING_REAL) {
+        if (sState != FOLLOWING && sState != SETTLING && sState != DROPPING
+                && sState != WAITING_REAL) {
             return; // 未跟手 (锁屏 shade / 补偿路径), stock 淡入
         }
         sState = SETTLING;
@@ -1281,73 +1511,25 @@ public final class StatusBarContinuity {
         bar.removeCallbacks(sSwapPoll);
         bar.setVisibility(View.VISIBLE); // 同帧对抗 stock 前置 GONE
         showLayers();
-        resetGroupShifts(bar);        // 残留位移会污染 shift 测量
-        captureShifts(bar);           // 入口刷新: settle 分组横移目标用新值
-        measureBase(bar);             // 层基准同步刷新 (横竖屏各自会话内自洽)
-        final View pc = getPanelContents(bar);
-        applyTint(pc, sPanelTint); // contents 不可见时切换 → 无闪
-        // 1 帧硬切: 栏恢复不透明 + contents 瞬时复显 + 位图半层瞬时隐去
-        bar.setAlpha(1f);
-        restoreContentsAlpha(bar);
-        ImageView hl = sLeftLayer.get();
-        if (hl != null) {
-            hl.setAlpha(0f);
-        }
-        ImageView hr = sRightLayer.get();
-        if (hr != null) {
-            hr.setAlpha(0f);
-        }
-        ArrayList<Animator> anims = new ArrayList<Animator>();
-        anims.add(objAnim(bar, "translationY", bar.getTranslationY(), 0f, SETTLE_MS));
-        addGroupShiftAnims(bar, anims, true, SETTLE_MS); // CC 栏横向滑入真实→面板几何
-        ImageView l = sLeftLayer.get();
-        if (l != null) {
-            anims.add(objAnim(l, "translationX", l.getTranslationX(),
-                    sBaseLeftTx + sLeftShift, SETTLE_MS));
-            anims.add(objAnim(l, "translationY", l.getTranslationY(),
-                    sBaseTy + sOffset, SETTLE_MS));
-        }
-        ImageView r = sRightLayer.get();
-        if (r != null) {
-            anims.add(objAnim(r, "translationX", r.getTranslationX(),
-                    sBaseRightTx + sRightShift, SETTLE_MS));
-            anims.add(objAnim(r, "translationY", r.getTranslationY(),
-                    sBaseTy + sOffset, SETTLE_MS));
-        }
-        AnimatorSet set = new AnimatorSet();
-        set.playTogether(anims);
-        set.addListener(new Animator.AnimatorListener() {
+        ValueAnimator hold = ValueAnimator.ofFloat(0f, 1f);
+        hold.setDuration(400L); // ≈首卡片时长: 若成为 stock 总集 get(0) 不压缩卡片动画
+        hold.setInterpolator(springIp(400f, SPRING_K)); // spring 曲线推进
+        final float settleP0 = sProgress; // 占位进度源起点 (不回跳)
+        hold.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
             @Override
-            public void onAnimationStart(Animator a) {
-            }
-
-            @Override
-            public void onAnimationEnd(Animator a) {
-                bar.setTranslationY(0f);
-                resetGroupShifts(bar); // 分组精确归零
-                restoreContentsAlpha(bar);
-                refreshOffset(bar);
-                refreshTintStatics(bar);
-                if (sState == SETTLING) {
-                    sState = SETTLED;
+            public void onAnimationUpdate(ValueAnimator a) {
+                // 手指未抬: onMove 映射优先 (此处不干预); 手指已抬 (程序化
+                // 展开): 占位即进度源, 从 settle 时进度线性推进至 100.
+                if (!sFingerDown && sState == SETTLING && !sRevealed) {
+                    float f = ((Float) a.getAnimatedValue()).floatValue();
+                    applyProgress(bar, settleP0 + (1f - settleP0) * f);
                 }
-            }
-
-            @Override
-            public void onAnimationCancel(Animator a) {
-                // 被下一相位取消: 不强制归位, 从当前值续接
-                if (sState == SETTLING) {
-                    sState = SETTLED;
-                }
-            }
-
-            @Override
-            public void onAnimationRepeat(Animator a) {
             }
         });
-        sPhaseAnim = set;
-        param.setResult(set);
-        Port.log(TAG + ": settle from ty=" + bar.getTranslationY() + " bmp=" + sBmpOk);
+        sPhaseAnim = hold;
+        param.setResult(hold);
+        Port.log(TAG + ": settle (finger-mapped) ty=" + bar.getTranslationY()
+                + " fingerDown=" + sFingerDown + " bmp=" + sBmpOk);
     }
 
     /**
@@ -1378,8 +1560,12 @@ public final class StatusBarContinuity {
             Port.log(TAG + ": collapse degrade (orientation changed)");
             return; // 不 setResult → stock 自建动画原样跑
         }
+        // 静态手势 (旋转首拉) 收起兜底: 面板已展开重排, 几何可信即重测
+        // 并把复制层刷到 settle 位 (reveal 后未刷成时) — 本次收起即正确
+        refreshStaticGeometry(bar);
         sState = COLLAPSING;
         cancelPhaseAnim();
+        sSpringRunning = false;
         bar.setVisibility(View.VISIBLE);
         showLayers();
         View pc = getPanelContents(bar);
@@ -1389,20 +1575,32 @@ public final class StatusBarContinuity {
         } else {
             applyTint(pc, sRealTint); // 降级: 无位图, 硬切回真实色 (二轮行为)
         }
+        // 收起漂移固定时长 0.5s (用户定), spring 曲线 (dur+k 全局可调)
+        long driftMs = COLLAPSE_DRIFT_MS;
+        TimeInterpolator ip = springIp(driftMs, SPRING_K);
         ArrayList<Animator> anims = new ArrayList<Animator>();
-        anims.add(objAnim(bar, "translationY", bar.getTranslationY(), -sOffset, SETTLE_MS));
-        addGroupShiftAnims(bar, anims, false, SETTLE_MS); // CC 栏横向滑出面板→真实几何
+        if (!sBmpOk) {
+            // 降级: CC 栏 (contents 可见) 本体位移
+            anims.add(objAnim(bar, "translationY", bar.getTranslationY(), -sOffset,
+                    driftMs, ip));
+            addGroupShiftAnims(bar, anims, false, driftMs, ip); // CC 栏横向滑出面板→真实几何
+        }
+        // 位图可用: 仅复制层漂移, CC 栏不位移
         ImageView l = sLeftLayer.get();
         if (l != null) {
             l.setAlpha(1f);
-            anims.add(objAnim(l, "translationX", l.getTranslationX(), sBaseLeftTx, SETTLE_MS));
-            anims.add(objAnim(l, "translationY", l.getTranslationY(), sBaseTy, SETTLE_MS));
+            anims.add(objAnim(l, "translationX", l.getTranslationX(), sBaseLeftTx,
+                    driftMs, ip));
+            anims.add(objAnim(l, "translationY", l.getTranslationY(), sBaseTy,
+                    driftMs, ip));
         }
         ImageView r = sRightLayer.get();
         if (r != null) {
             r.setAlpha(1f);
-            anims.add(objAnim(r, "translationX", r.getTranslationX(), sBaseRightTx, SETTLE_MS));
-            anims.add(objAnim(r, "translationY", r.getTranslationY(), sBaseTy, SETTLE_MS));
+            anims.add(objAnim(r, "translationX", r.getTranslationX(), sBaseRightTx,
+                    driftMs, ip));
+            anims.add(objAnim(r, "translationY", r.getTranslationY(), sBaseTy,
+                    driftMs, ip));
         }
         AnimatorSet set = new AnimatorSet();
         set.playTogether(anims);
@@ -1431,10 +1629,10 @@ public final class StatusBarContinuity {
         // → 漂移被拖成 300ms 与 stock 卡片动画错拍. 自启保住设计时长, 不受外层摆布.
         set.start();
         AnimatorSet dummy = new AnimatorSet();
-        dummy.setDuration(SETTLE_MS); // 占位: 外层 get(0) 兜底时长, 播放无害空集
+        dummy.setDuration(driftMs); // 占位: 外层 get(0) 兜底时长, 播放无害空集
         param.setResult(dummy);
         bar.removeCallbacks(sCollapseWatch);
-        bar.postDelayed(sCollapseWatch, SETTLE_MS + 150L); // 停滞保险
+        bar.postDelayed(sCollapseWatch, driftMs + 150L); // 停滞保险
         ImageView lg = sLeftLayer.get();
         Port.log(TAG + ": collapse drift to " + (-sOffset) + " layerA="
                 + (lg == null ? "none" : String.valueOf(lg.getAlpha())));
@@ -1544,6 +1742,81 @@ public final class StatusBarContinuity {
             }
             return;
         }
+        // settle 提交后松手 (fling 展开: 未达 settle 位但达速度要求, 同帧
+        // hook 顺序 onSettle 先于本 hook); 或 settle hook 未及触发的边路
+        // (FOLLOWING + showingType!=0): 剩余进度按手指速率续接 (恒速线性)
+        // 到 100 才真栏接替 — 不突变.
+        if (sState == SETTLING
+                || (sState == FOLLOWING && showingType(param.thisObject) != 0)) {
+            final View sBar = sTarget.get();
+            if (sBar == null) {
+                sState = IDLE;
+                return;
+            }
+            if (!enabled) {
+                hideBar(sBar);
+                sState = IDLE;
+                return;
+            }
+            cancelPhaseAnim(); // 停 settle 占位 update (防进度回落回退接替)
+            sSpringRunning = false; // 停跟手 spring 帧循环 (续接动画接管)
+            if (sProgress >= 0.999f) {
+                // 已达进度100 (真栏已接替): 收尾静态刷新
+                applyProgress(sBar, 1f);
+                if (!sStaticGesture) {
+                    refreshOffset(sBar);
+                }
+                refreshTintStatics(sBar);
+                sState = SETTLED;
+                Port.log(TAG + ": settled (finger up) progress=" + sProgress);
+                return;
+            }
+            // 剩余进度续接: 时长 = 剩余纵向距离/|手指速率| (栏/层同距), spring 曲线
+            sState = SETTLING;
+            long contMs = velDuration(sOffset * Math.max(0f, 1f - sProgress));
+            final ValueAnimator cont = ValueAnimator.ofFloat(sProgress, 1f);
+            cont.setInterpolator(springIp(contMs, SPRING_K));
+            cont.setDuration(contMs);
+            cont.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+                @Override
+                public void onAnimationUpdate(ValueAnimator a) {
+                    if (sState == SETTLING) {
+                        applyProgress(sBar, ((Float) a.getAnimatedValue()).floatValue());
+                    }
+                }
+            });
+            cont.addListener(new Animator.AnimatorListener() {
+                @Override
+                public void onAnimationStart(Animator a) {
+                }
+
+                @Override
+                public void onAnimationEnd(Animator a) {
+                    if (sPhaseAnim == cont && sState == SETTLING) {
+                        // 续接到 100: 真栏接替 + 静态刷新 (cancel 不入)
+                        applyProgress(sBar, 1f);
+                        if (!sStaticGesture) {
+                            refreshOffset(sBar);
+                        }
+                        refreshTintStatics(sBar);
+                        sState = SETTLED;
+                        Port.log(TAG + ": settle continue done");
+                    }
+                }
+
+                @Override
+                public void onAnimationCancel(Animator a) {
+                }
+
+                @Override
+                public void onAnimationRepeat(Animator a) {
+                }
+            });
+            sPhaseAnim = cont;
+            cont.start();
+            Port.log(TAG + ": settle continue from " + sProgress);
+            return;
+        }
         if (sState != FOLLOWING) {
             return; // settle 已接管或未 engage
         }
@@ -1561,21 +1834,34 @@ public final class StatusBarContinuity {
         if (showingType(ctrl) != 0) {
             return; // 展开已触发 (settle 已接管, 状态应为 SETTLING)
         }
-        // drop-back: 位图保持不透明随行回位 (无淡入), 结束停靠进入收尾轮询
+        // drop-back: 位图保持不透明随行回位 (无淡入), 结束停靠进入收尾轮询.
+        // 松手续接: 时长 = 剩余距离/|手指速率|, spring 曲线.
         sState = DROPPING;
         cancelPhaseAnim();
+        sSpringRunning = false;
+        long dropMs = velDuration(sOffset * sProgress); // 剩余纵向距离 (栏/层同距)
+        TimeInterpolator dip = springIp(dropMs, SPRING_K);
         ArrayList<Animator> anims = new ArrayList<Animator>();
-        anims.add(objAnim(bar, "translationY", bar.getTranslationY(), -sOffset, DROP_MS));
-        addGroupShiftAnims(bar, anims, false, DROP_MS); // 分组同步骑回真实位
+        if (!sBmpOk) {
+            // 降级: CC 栏 (contents 可见) 本体位移
+            anims.add(objAnim(bar, "translationY", bar.getTranslationY(), -sOffset,
+                    dropMs, dip));
+            addGroupShiftAnims(bar, anims, false, dropMs, dip); // 分组同步骑回真实位
+        }
+        // 位图可用: 仅复制层回落, CC 栏不位移
         ImageView l = sLeftLayer.get();
         if (l != null) {
-            anims.add(objAnim(l, "translationX", l.getTranslationX(), sBaseLeftTx, DROP_MS));
-            anims.add(objAnim(l, "translationY", l.getTranslationY(), sBaseTy, DROP_MS));
+            anims.add(objAnim(l, "translationX", l.getTranslationX(), sBaseLeftTx,
+                    dropMs, dip));
+            anims.add(objAnim(l, "translationY", l.getTranslationY(), sBaseTy,
+                    dropMs, dip));
         }
         ImageView r = sRightLayer.get();
         if (r != null) {
-            anims.add(objAnim(r, "translationX", r.getTranslationX(), sBaseRightTx, DROP_MS));
-            anims.add(objAnim(r, "translationY", r.getTranslationY(), sBaseTy, DROP_MS));
+            anims.add(objAnim(r, "translationX", r.getTranslationX(), sBaseRightTx,
+                    dropMs, dip));
+            anims.add(objAnim(r, "translationY", r.getTranslationY(), sBaseTy,
+                    dropMs, dip));
         }
         AnimatorSet set = new AnimatorSet();
         set.playTogether(anims);
@@ -1658,7 +1944,7 @@ public final class StatusBarContinuity {
     // ---------------------------------------------------------------- helpers
 
     private static void cancelPhaseAnim() {
-        AnimatorSet a = sPhaseAnim;
+        Animator a = sPhaseAnim;
         if (a != null) {
             sPhaseAnim = null;
             try {
@@ -1674,6 +1960,7 @@ public final class StatusBarContinuity {
         bar.setVisibility(View.GONE);
         bar.setAlpha(1f);
         bar.setTranslationY(0f);
+        sSpringRunning = false;
         restoreContentsAlpha(bar);
         resetGroupShifts(bar);
         removeLayers();
@@ -1681,10 +1968,59 @@ public final class StatusBarContinuity {
     }
 
     private static ObjectAnimator objAnim(View v, String prop, float from, float to, long ms) {
+        return objAnim(v, prop, from, to, ms, FOSI);
+    }
+
+    /** spring 曲线位移 (续接/漂移/回落): dur+k 两个全局可调值. */
+    private static ObjectAnimator objAnim(View v, String prop, float from, float to,
+            long ms, TimeInterpolator ip) {
         ObjectAnimator a = ObjectAnimator.ofFloat(v, prop, from, to);
-        a.setInterpolator(FOSI);
+        a.setInterpolator(ip);
         a.setDuration(ms);
         return a;
+    }
+
+    /** 松手续接时长: 剩余距离 / |手指速率|, 夹取 [80,200]ms — 与跟手同速到达. */
+    private static long velDuration(float remainPx) {
+        if (remainPx <= 1f) {
+            return 80L;
+        }
+        float v = Math.abs(sVelY);
+        float ms = v > 0.05f ? remainPx / v : 200f;
+        return (long) Math.max(80f, Math.min(200f, ms));
+    }
+
+    /**
+     * spring 插值 (动画用), 仅两个可调入参: durMs=时标(ms), k=整体系数.
+     * 欠阻尼二阶弹簧归一化阶跃 h(τ)=1−e^(−ζωτ)·(cos(ωdτ)+ζω/ωd·sin(ωdτ)),
+     * ω=2π·k·1000/dur, 阻尼 ζ=0.8 (内置, 微弹).
+     */
+    private static TimeInterpolator springIp(final float durMs, final float k) {
+        return new TimeInterpolator() {
+            @Override
+            public float getInterpolation(float t) {
+                float omega = 2f * (float) Math.PI * 1000f * k / durMs;
+                float zeta = 0.8f;
+                float tau = t * durMs / 1000f;
+                float wd = omega * (float) Math.sqrt(1f - zeta * zeta);
+                if (wd <= 0f) {
+                    return t;
+                }
+                return 1f - (float) Math.exp(-zeta * omega * tau)
+                        * ((float) Math.cos(wd * tau)
+                        + (zeta * omega / wd) * (float) Math.sin(wd * tau));
+            }
+        };
+    }
+
+    /** 当前旋转 (0/1/2/3), 取不到返回 -1 (不参与旋转检测). */
+    private static int currentRotation(View bar) {
+        try {
+            android.view.Display d = bar.getDisplay();
+            return d == null ? -1 : d.getRotation();
+        } catch (Throwable t) {
+            return -1;
+        }
     }
 
     private static View getRealContents(View realBar) {
