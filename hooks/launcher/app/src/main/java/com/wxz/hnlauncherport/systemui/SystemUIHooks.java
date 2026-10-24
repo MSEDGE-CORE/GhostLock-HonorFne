@@ -60,6 +60,8 @@ public final class SystemUIHooks {
     private static int sCurBlurRadius = 0;
     /** 已对同一 view 写过 radius=0 的去重标记 (跳过重复 0 写入). */
     private static WeakReference<View> sZeroBlurView = new WeakReference<View>(null);
+    /** cancelPanelAnimator 状态保护: {View, alpha, translationY, visibility}. */
+    private static final ArrayList<Object[]> sCancelSaved = new ArrayList<Object[]>();
 
     public static void install(ClassLoader cl) {
         Class<?> ctrl = XposedHelpers.findClass(CTRL_CLS, cl);
@@ -330,6 +332,61 @@ public final class SystemUIHooks {
         } catch (Throwable t) {
             Port.log("SystemUIHooks: startBlurAnim probe failed", t);
         }
+        // (5b) 上滑收起时模糊跟手 (同 KEY_CC_REAL_BLUR): stock 在
+        // mIsPanelChangedWhenTracking (同一手势内已展开) 时把快照层 alpha
+        // 钉死 1.0, 上滑全程不跟手, 收起阈值触发后固定时长动画淡出.
+        // before-hook 整体替换该分支 (不与 stock 的 setAlpha(1.0) 同帧双写
+        // radius=0/非0 事务 — 双写跨 vsync 会交替提交导致模糊层闪烁):
+        // alpha = clamp(f3 / mDistanceForExpand), 与下滑/卡片高度
+        // (getExpectHeight: max(f3,0)/mDistanceForExpand) 同一归一化,
+        // 快照层 setAlpha 后自动经 (5) 管线驱动真窗口模糊半径.
+        try {
+            final Class<?> panelImplBlurCls = XposedHelpers.findClass(PANEL_IMPL_CLS, cl);
+            XposedHelpers.findAndHookMethod(panelImplBlurCls, "onTrackingBlurAlphaChange",
+                    float.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    if (!Port.on(Port.KEY_CC_REAL_BLUR)) {
+                        return;
+                    }
+                    Object impl = param.thisObject;
+                    if (XposedHelpers.getObjectField(impl, "mBlurAnimator") != null) {
+                        return; // 动画器接管期不抢
+                    }
+                    if (XposedHelpers.getFloatField(impl, "mInitialY")
+                            > XposedHelpers.getFloatField(impl, "mHeightForTouchExpand")) {
+                        return; // stock 早退分支 (起手在面板内容上), 不干预
+                    }
+                    if (!XposedHelpers.getBooleanField(impl, "mIsPanelChangedWhenTracking")) {
+                        return; // stock 自身跟手分支, 不干预
+                    }
+                    float f3 = (Float) param.args[0]
+                            - XposedHelpers.getFloatField(impl, "mInitialY");
+                    float mExpand = XposedHelpers.getIntField(impl, "mDistanceForExpand");
+                    if (mExpand <= 0f) {
+                        return;
+                    }
+                    float alpha = f3 / mExpand;
+                    if (alpha < 0f) {
+                        alpha = 0f;
+                    } else if (alpha > 1f) {
+                        alpha = 1f;
+                    }
+                    View blurView = (View) XposedHelpers.getObjectField(impl, "mBlurView");
+                    if (blurView == null) {
+                        return;
+                    }
+                    // 复刻 stock: setViewVisibility(mBlurView, fullyExpanded || f3>0)
+                    XposedHelpers.callMethod(impl, "setViewVisibility", blurView, alpha > 0f);
+                    if (blurView.getAlpha() != alpha) {
+                        blurView.setAlpha(alpha); // -> (5) setAlpha 管线 -> 真模糊半径
+                    }
+                    param.setResult(null); // 跳过 stock 钉死的 setAlpha(1.0)
+                }
+            });
+        } catch (Throwable t) {
+            Port.log("SystemUIHooks: up-swipe blur tracking failed", t);
+        }
 
         // (4b) 控制中心卡片放大锚点 (同 KEY_CC_SPRING_VEL): 上排角锚点, 下排顶边中点
         final Class<?> panelImplCls = XposedHelpers.findClass(PANEL_IMPL_CLS, cl);
@@ -388,6 +445,76 @@ public final class SystemUIHooks {
                         });
                     }
                 });
+
+        // (4c) 展开/收起动画可打断 (同 KEY_CC_SPRING_VEL):
+        // stock 中断路径有两处跳变: (a) 起步值定值 — getAnimateStartAlpha
+        // 在 z2=false 时返回定值 0/1, 中断重启 alpha 跳变; (b) cancel 时
+        // onAnimationCancel 把 translationY 跳到 -60dp, onAnimationEnd 再
+        // resetViewAlphaAndScale + 隐藏, 中断瞬间卡片闪跳.
+        // 修复: 起步 alpha 读当前 (仅 view 可见 = 中断态; 不可见 = 静止态
+        // 保持 stock 起步), cancelPanelAnimator 前捕获 / 后恢复各 target 的
+        // alpha/translationY/visibility. translationY 起步 stock 已读当前.
+        // 不动 z2 语义 (z2 还承担 面板链式切换/状态栏跳过, 不能强开).
+        final Class<?> panelImplAnimCls = XposedHelpers.findClass(PANEL_IMPL_CLS, cl);
+        XposedHelpers.findAndHookMethod(panelImplAnimCls, "getAnimateStartAlpha",
+                View.class, boolean.class, boolean.class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                if (!Port.on(Port.KEY_CC_SPRING_VEL)) {
+                    return;
+                }
+                if (Boolean.TRUE.equals(param.args[2])) {
+                    return; // z2=true 已是读当前
+                }
+                View v = (View) param.args[0];
+                if (v.getVisibility() != View.VISIBLE) {
+                    return; // 非中断态 (隐藏/静止), 保持 stock 起步
+                }
+                param.setResult(v.getAlpha());
+            }
+        });
+        XposedHelpers.findAndHookMethod(panelImplAnimCls, "cancelPanelAnimator",
+                new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                sCancelSaved.clear();
+                if (!Port.on(Port.KEY_CC_SPRING_VEL)) {
+                    return;
+                }
+                Object set = XposedHelpers.getObjectField(param.thisObject, "mPanelAnimatorSet");
+                if (!(set instanceof android.animation.AnimatorSet)) {
+                    return;
+                }
+                java.util.List<android.animation.Animator> children =
+                        ((android.animation.AnimatorSet) set).getChildAnimations();
+                for (int i = 0; i < children.size(); i++) {
+                    android.animation.Animator child = children.get(i);
+                    if (child instanceof android.animation.ObjectAnimator) {
+                        Object target = ((android.animation.ObjectAnimator) child).getTarget();
+                        if (target instanceof View) {
+                            View v = (View) target;
+                            sCancelSaved.add(new Object[]{v, Float.valueOf(v.getAlpha()),
+                                    Float.valueOf(v.getTranslationY()),
+                                    Integer.valueOf(v.getVisibility())});
+                        }
+                    }
+                }
+            }
+
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                for (int i = 0; i < sCancelSaved.size(); i++) {
+                    Object[] s = sCancelSaved.get(i);
+                    View v = (View) s[0];
+                    if (v.isAttachedToWindow()) {
+                        v.setAlpha((Float) s[1]);
+                        v.setTranslationY((Float) s[2]);
+                        v.setVisibility((Integer) s[3]);
+                    }
+                }
+                sCancelSaved.clear();
+            }
+        });
 
         // (6) 锁屏隐藏步数: 真正渲染步数的是 FooterView.setVisibilityOfStep
         // (左下角步数文本/图标), 一律 GONE.

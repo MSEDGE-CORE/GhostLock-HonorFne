@@ -6,12 +6,14 @@ import android.animation.ObjectAnimator;
 import android.animation.TimeInterpolator;
 import android.content.Context;
 import android.content.res.Resources;
-import android.util.TypedValue;
-import android.view.Gravity;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Rect;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.widget.FrameLayout;
-import android.widget.TextView;
+import android.widget.ImageView;
 import android.view.animation.PathInterpolator;
 
 import com.wxz.hnlauncherport.Port;
@@ -25,48 +27,50 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 
 /**
- * 状态栏连贯 (KEY_CC_STATUSBAR_CONTINUITY): 下拉进入控制中心/通知中心时,
- * 面板现成状态栏 (HwNotchStatusBar, "SharedStatusBar", 手机上 CC/NC 共用)
- * 从真状态栏位置随手指连续移动到面板自然位置.
+ * 状态栏连贯 (KEY_CC_STATUSBAR_CONTINUITY) 第三轮: 真实栏左右两段整体位图 + 阈值交叉淡化.
+ *
+ * 架构 (V14 双窗口): ① 状态栏窗口 (super_status_bar: 真实栏 HwPhoneStatusBarView,
+ * 内容显隐由 disable 标志驱动); ② shade 窗口 (super_notification_shade: 连贯层
+ * HnNotchStatusBar = mHnNotchStatusBar/mHnNotchNotificationsStatusBar, 手机 CC/NC 共用).
+ *
+ * 位图半层 (0/0.1/0.2): fresh engage 把真实栏 HwStatusbarContents 按左右两段整体截成
+ * Bitmap (分割线 = system_icon_area 左缘, 兜底电池左缘/0.6w, 只画内容容器避开栏背景),
+ * 两个 ImageView 挂面板栏父容器 (mQuickSettingsContainer, FrameLayout) 顶层; 跟手期
+ * 位图为唯一可见 (面板 contents alpha 0) → 运营商/杂项/时钟/隐私胶囊与真实栏设置像素级
+ * 同步. settle 阈值: 位图→0 / contents→1 交叉淡化 (applyTint(sPanelTint) 在 contents
+ * 不可见时切 → 无闪); collapse 阈值镜像交叉淡化, 无任何 tint 硬切 (第二轮 "收起闪" 根因).
+ * 位图缓存跨循环 re-engage 复用 (此时真实栏已被 disable 隐藏).
+ *
+ * 左右收窄 (0.1, 容器级, 与运营商显示无关):
+ *   左: (面板 contents 左缘+paddingStart) − (真实 contents 左缘+paddingStart)
+ *   右: (面板 contents 右缘−paddingEnd) − (真实 contents 右缘−paddingEnd)
+ * 骑乘 translationX = base + shift*p; 纵向 = baseTy + offset*p.
+ *
+ * 旋转新鲜度门控 (1): 面板栏/contents 休眠态 GONE 不参与旋转重排 → 首次几何过期.
+ * panelFresh = 栏宽 ≈ 当前屏宽 (±25%, 旋转差远超容差); 过期时 measureOffsetDirect /
+ * captureShifts 返回失败, follow 每步重试, 栏 VISIBLE 重排后自动生效; settle tint 改用
+ * 空区域+纯色 (不再引用捕获区域 → 无过期 Rect).
+ *
+ * 隐私胶囊等实时同步 (3): CC 期间隐私胶囊显示/隐藏、时钟分钟、电量变化会让停靠位图过期
+ * (收起错位). 收尾轮询发现真实栏内容开始重现 (VISIBLE 且 alpha>0, 布局已刷新) 时
+ * 强制不透明重截两段位图 (临时把后代 alpha 置 1 再画, 同帧恢复) + 重测 base 吸附停靠位.
  *
  * offset (两层移动距离, V17 getDistanceY 语义, V14 几何):
- *  = 面板栏电池自然屏幕Y − 真实栏电池屏幕Y.
- *  两栏 View 都在窗口 Y=0, 视觉差全在栏内部 (分机型适配 = 摄像头位置):
- *   - 中置摄像头 (胶囊): 面板栏高 max(N,S)+N 且内容行 paddingTop 运行时 += N;
- *   - 左/右置摄像头: 两个 +N 均不生效 → offset ≈ 0 (不下移).
- *  - 横屏: 每次 engage 重新实测 → 无向下 offset 时自然退化为仅横向收窄.
+ *  = 面板栏电池自然屏幕Y − 真实栏电池屏幕Y (GONE 保留 layout, 受新鲜度门控).
  *
- * 横向收窄 (V17 mLeft/mRightDistanceX 语义):
- *  engage 实测 左组 operator_name_container / 右组 system_icon_area(电池)
- *  与真实栏对应元素的 X 差, 跟手期 translationX 骑乘 (真实位→自然位收敛),
- *  settle 收敛 0, collapse/drop 回到真实栏位置.
+ * 截断 (点3): engage 对 面板栏 / contents / 父容器 链 clipChildren+clipToPadding 置
+ * false (记录原值), 硬切恢复 — 半层外移不再被裁.
  *
- * 时钟半层: 真实栏时钟 (CC 栏无时钟) 的像素级 TextView 拷贝, 挂在
- *  mQuickSettingsContainer (FrameLayout, 栏的父容器) 顶层, 骑乘整栏运动,
- *  settle 阈值处淡出, collapse/drop 淡回 — 停靠态与真实栏完全一致.
- *  stock startAnimationSet 会隐藏无 tag 子 View, settle/collapse hook
- *  同栈 (createStatusBarAnimation 在遍历之后调用) 重新 VISIBLE 对抗.
+ * 收起结尾 (点6, 延长浮层直到真栏显示): 收尾期 (COLLAPSING/DROPPING/WAITING_REAL):
+ * ① PanelBar L269 的面板 INVISIBLE 同调用复原; ② shade 窗口根 applyVisibility 的
+ * INVISIBLE 同调用复原; ③ 漂移结束停靠真实栏位置, 33ms 轮询真实栏时钟/电池 isShown
+ * 且 alpha≥0.9 (上限 ~500ms), 重现后硬切并恢复面板/shade 根 INVISIBLE.
  *
- * 淡入淡出 (无任何整栏显示/隐藏淡入淡出, 唯一淡入 = 阈值切换图标组):
- *  - 整栏: alpha 恒 1, engage 即时显示 / 硬切隐藏 (无淡入淡出).
- *  - 阈值切换: 跟手期间隐藏 operator_name_container / statusIcons /
- *    statusIcons_more / network_area_more / network_area_icons (alpha 0),
- *    settle 时 当前值→原值 淡入 (100ms, delay 50ms); drop 回位同样淡回.
- *  - 时钟: 跟手可见, settle 淡出 (150ms, delay 50ms), collapse/drop 淡回.
- *
- * 收起结尾硬切时机: collapse 漂移结束不隐藏 — 停靠在真实栏位置
- *  (WAITING_REAL, 内容与真实栏一致), 等真实栏可重现的同帧
- *  (PanelBar.onPanelCollapsed: 面板 fraction 已到 0, scrim 已收回)
- *  硬切隐藏 → 无空缺. 若 onPanelCollapsed 先于漂移结束到达
- *  (sSwapPending) 则漂移结束即硬切. drop (未过阈值) 面板收回快,
- *  漂移结束即隐藏 (真实栏未被 scrim 遮挡, 无空缺).
- *
- * 开-关循环 (不松手): 收起/展开触发点 (onPanelTouch 的 isCollapse/
- *  isExpand band, showingType 门控) 每次穿越恰好触发一次 stock 一次性
- *  路径 → settle/collapse 走与首次完全相同的 hook; engage 不再看
- *  mIsPanelChangedWhenTracking (松手前恒 true, 会挡住第二次开),
- *  且可从 COLLAPSING/DROPPING/WAITING_REAL 中断接管 (取消在飞动画,
- *  从当前位置续接) → 第二次开起保持连贯.
+ * 开-关循环 (不松手): 收起/展开触发点每次穿越恰好触发一次 stock 一次性路径 →
+ * settle/collapse 走与首次相同的 hook; engage 不看 mIsPanelChangedWhenTracking,
+ * 可从 DROPPING/WAITING_REAL 中断接管 (取消在飞动画与轮询, 位图复用, 续接).
+ * COLLAPSING 除外: 带内回穿收起即提交性 fling 关闭 (面板自主收起, 手指失效),
+ * 重 engage 会劫持收起漂移 → 连贯缺失; 只能走完 drift→WAITING_REAL→swap.
  */
 public final class StatusBarContinuity {
     private static final String TAG = "SBContinuity";
@@ -74,6 +78,8 @@ public final class StatusBarContinuity {
             "com.android.systemui.statusbar.phone.HnPanelViewControllerImpl";
     private static final String REAL_BAR_CLS =
             "com.android.systemui.statusbar.phone.HwPhoneStatusBarView";
+    private static final String SHADE_CONTROLLER_CLS =
+            "com.android.systemui.statusbar.phone.NotificationShadeWindowControllerImpl";
     private static final String NOTCH_UTILS_CLS =
             "com.android.systemui.utils.HwNotchUtils";
     private static final String PHONE_SB_UTILS_CLS =
@@ -85,26 +91,19 @@ public final class StatusBarContinuity {
     private static final int SETTLED = 3;
     private static final int COLLAPSING = 4;
     private static final int DROPPING = 5;
-    /** 收起漂移结束: 停靠真实栏位置, 等待 onPanelCollapsed 同帧硬切. */
+    /** 收尾停靠: 停靠真实栏位置, 轮询真实栏内容重现后硬切 (点6). */
     private static final int WAITING_REAL = 6;
 
     private static final long SETTLE_MS = 200L;
     private static final long DROP_MS = 200L;
-    private static final long MISC_FADE_MS = 100L;
-    private static final long MISC_FADE_DELAY_MS = 50L;
-    private static final long CLOCK_FADE_MS = 150L;
-    private static final long CLOCK_FADE_DELAY_MS = 50L;
+    /** settle: contents 淡入 / 位图淡出; collapse: 反向 (位图快速接管遮罩). */
+    private static final long CROSS_MS = 150L;
+    private static final long CROSS_IN_MS = 100L;
+    /** 点6: swap 轮询间隔与上限 (~500ms). */
+    private static final long POLL_MS = 33L;
+    private static final int POLL_MAX = 15;
     private static final TimeInterpolator FOSI =
             new PathInterpolator(0.4f, 0f, 0.2f, 1f);
-
-    /** 跟手期间隐藏、阈值 (settle) 时淡入的"运营商/杂项图标"组. */
-    private static final String[] MISC_NAMES = {
-            "operator_name_container",
-            "statusIcons",
-            "statusIcons_more",
-            "network_area_more",
-            "network_area_icons",
-    };
 
     private static volatile int sState = IDLE;
     private static volatile float sOffset = 0f;
@@ -113,33 +112,95 @@ public final class StatusBarContinuity {
     private static WeakReference<View> sTarget = new WeakReference<View>(null);
     /** 当前相位动画 (settle/collapse/drop), 换相/engage 时取消. */
     private static AnimatorSet sPhaseAnim;
-    /** onPanelCollapsed 先于收起漂移结束到达: 漂移结束即硬切. */
-    private static boolean sSwapPending = false;
     private static Field sTouchAreaField;
     private static Class<?> sNotchUtilsCls;
     private static Class<?> sPhoneSbUtilsCls;
+    private static boolean sIdsReady;
     private static int sBatteryId;
     private static int sClockId;
-    private static int sOperatorId;
     private static int sIconAreaId;
-    private static int[] sMiscIds;
-    private static final ArrayList<View> sMisc = new ArrayList<View>();
-    private static float[] sMiscBase = new float[0];
-    /** 横向收窄: 左组 (operator) / 右组 (system_icon_area, 含电池). */
-    private static WeakReference<View> sLeftGrp = new WeakReference<View>(null);
-    private static WeakReference<View> sRightGrp = new WeakReference<View>(null);
-    private static float sDeltaLeft = 0f;
-    private static float sDeltaRight = 0f;
-    /** 时钟半层 (真实栏时钟像素拷贝) 及其在容器内的基准 translation. */
-    private static WeakReference<TextView> sClockLayer = new WeakReference<TextView>(null);
-    private static WeakReference<ViewGroup> sClockParent = new WeakReference<ViewGroup>(null);
-    private static float sClockBaseTx = 0f;
-    private static float sClockBaseTy = 0f;
+    private static int sContentsId;
+    /** CC 栏横向移动分组: 左组 (运营商/杂项) 与右组同 iconArea, 时钟复用 sClockId. */
+    private static int sOperatorId;
+    private static int sUnstableId;
+    /** 采集时屏宽: 横竖屏新鲜度 token (CC 开着旋转 → collapse 几何过期降级). */
+    private static int sGeomW;
+    /** 位图半层: 左右两段 (真实栏像素), 缓存跨循环复用. */
+    private static boolean sBmpCached;
+    private static boolean sBmpOk;
+    private static Bitmap sLeftBmp;
+    private static Bitmap sRightBmp;
+    private static int sSplitX;
+    private static WeakReference<ImageView> sLeftLayer = new WeakReference<ImageView>(null);
+    private static WeakReference<ImageView> sRightLayer = new WeakReference<ImageView>(null);
+    private static WeakReference<ViewGroup> sLayerParentRef = new WeakReference<ViewGroup>(null);
+    /** 半层基准 translation (p=0 = 真实栏位置, 父容器坐标). */
+    private static float sBaseLeftTx;
+    private static float sBaseRightTx;
+    private static float sBaseTy;
+    /** 左右收窄量 (p=1 目标增量, 容器级, 与运营商显示无关). */
+    private static float sLeftShift;
+    private static float sRightShift;
+    private static boolean sShiftsFresh;
+    /** 面板 contents 隐藏 (跟手期位图独占), 原值记录. */
+    private static boolean sContentsHidden;
+    private static float sContentsOrigAlpha = 1f;
+    /** tint 静态 (fresh engage 捕获; 区域弃用 — settle 用空区域+纯色, 旋转安全). */
+    private static int sRealTint;
+    private static int sPanelTint;
+    private static WeakReference<View> sRealClockRef = new WeakReference<View>(null);
+    /** 点3: clipChildren/clipToPadding 原值记录, 硬切恢复. */
+    private static final ArrayList<ViewGroup> sClipViews = new ArrayList<ViewGroup>();
+    private static final ArrayList<Boolean> sClipChildOrig = new ArrayList<Boolean>();
+    private static final ArrayList<Boolean> sClipPadOrig = new ArrayList<Boolean>();
+    /** 点6: 收尾期强制 VISIBLE 的宿主 (面板/shade 根), 硬切时恢复 INVISIBLE. */
+    private static final ArrayList<View> sForcedVis = new ArrayList<View>();
+    /** 点6: swap 轮询 (真实栏内容重现探针 + 隐私胶囊重截窗口). */
+    private static int sPollCount;
+    private static boolean sResyncDone;
+    /** 旋转后首次手势: 面板树 GONE 未重排 → 层延迟到 follow 重排完成再挂 (防横竖屏 X 错位). */
+    private static boolean sLayersPending;
+    /** collapse 漂移保险: 自启 set 若意外停滞, 超时强制收尾 (防 COLLAPSING 卡死). */
+    private static final Runnable sCollapseWatch = new Runnable() {
+        @Override
+        public void run() {
+            View bar = sTarget.get();
+            if (bar != null && sState == COLLAPSING) {
+                Port.log(TAG + ": collapse watch fired (drift stalled)");
+                finishCollapse(bar);
+            }
+        }
+    };
+    private static final Runnable sSwapPoll = new Runnable() {
+        @Override
+        public void run() {
+            View bar = sTarget.get();
+            if (bar == null || sState != WAITING_REAL) {
+                return; // 状态已变 (re-engage / 重置)
+            }
+            keepHostsVisible(bar);
+            // 隐私胶囊/时钟分钟等变化: 真实栏开始重现 (布局已刷新) 时重截+吸附
+            if (!sResyncDone && realShowFading()) {
+                sResyncDone = true;
+                resyncLayers(bar);
+            }
+            if (sPollCount >= POLL_MAX || realBarShown()) {
+                if (!sResyncDone) { // 探针通过仍未重截 (极端): 换前同帧吸附
+                    sResyncDone = true;
+                    resyncLayers(bar);
+                }
+                swapNow(bar);
+            } else {
+                sPollCount++;
+                bar.postDelayed(this, POLL_MS);
+            }
+        }
+    };
 
     public static void install(ClassLoader cl) {
         final Class<?> panelImpl = XposedHelpers.findClass(PANEL_IMPL_CLS, cl);
 
-        // 真状态栏视图捕获 (电池锚点测量基准 + onPanelCollapsed 硬切点)
+        // 真状态栏视图捕获 (电池锚点测量基准)
         final Class<?> realBarCls = XposedHelpers.findClass(REAL_BAR_CLS, cl);
         XposedBridge.hookAllConstructors(realBarCls, new XC_MethodHook() {
             @Override
@@ -186,18 +247,49 @@ public final class StatusBarContinuity {
             }
         });
 
-        // 收起结尾硬切点: 面板 fraction 到 0 且未在跟手 (scrim 已收回,
-        // 真实栏可重现) 的同帧. (PanelBar.onPanelCollapsed, 真实栏上的 override 链)
-        XposedHelpers.findAndHookMethod(realBarCls, "onPanelCollapsed", new XC_MethodHook() {
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                try {
-                    onRealBarCollapsed();
-                } catch (Throwable t) {
-                    Port.log(TAG + ": swap failed", t);
-                }
-            }
-        });
+        // 点6①: PanelBar.panelExpansionChanged 在 fraction 0 (z=false) 时把
+        // 面板 (真栏 mPanel, 连贯层宿主) 置 INVISIBLE — 收尾期每次调用后
+        // 立即复原, 保持连贯层可见直到真实栏内容重现.
+        XposedHelpers.findAndHookMethod(realBarCls, "panelExpansionChanged",
+                float.class, boolean.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        try {
+                            if ((Boolean) param.args[1] || !inEndgame()) {
+                                return;
+                            }
+                            Object pv = XposedHelpers.getObjectField(param.thisObject, "mPanel");
+                            if (pv instanceof View) {
+                                forceVisible((View) pv);
+                            }
+                        } catch (Throwable t) {
+                            Port.log(TAG + ": keep panel failed", t);
+                        }
+                    }
+                });
+
+        // 点6②: shade 窗口根在"非展开"态被 applyVisibility 置 INVISIBLE
+        // (scrims 归零后触发) — 收尾期同调用复原.
+        final Class<?> shadeCtlCls = XposedHelpers.findClass(SHADE_CONTROLLER_CLS, cl);
+        final Class<?> shadeStateCls = XposedHelpers.findClass(SHADE_CONTROLLER_CLS + "$State", cl);
+        XposedHelpers.findAndHookMethod(shadeCtlCls, "applyVisibility", shadeStateCls,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        try {
+                            if (!inEndgame()) {
+                                return;
+                            }
+                            Object root = XposedHelpers.getObjectField(
+                                    param.thisObject, "mNotificationShadeView");
+                            if (root instanceof View) {
+                                forceVisible((View) root);
+                            }
+                        } catch (Throwable t) {
+                            Port.log(TAG + ": keep shade root failed", t);
+                        }
+                    }
+                });
 
         Port.log("StatusBarContinuity installed");
     }
@@ -211,7 +303,9 @@ public final class StatusBarContinuity {
                     || sState == DROPPING || sState == WAITING_REAL) {
                 View bar = sTarget.get();
                 if (bar != null) {
+                    bar.removeCallbacks(sSwapPoll);
                     hideBar(bar);
+                    restoreForcedVis();
                 }
                 sState = IDLE;
             }
@@ -227,8 +321,11 @@ public final class StatusBarContinuity {
             follow(param.thisObject, bar, y);
             return;
         }
-        if (sState == IDLE || sState == COLLAPSING
-                || sState == DROPPING || sState == WAITING_REAL) {
+        // COLLAPSING 不可重 engage: 带内回穿收起是提交性 fling 关闭
+        // (notifyControlCenterPanelFlingClose, 手指几何已失效), 必须走
+        // drift→WAITING_REAL→swap 收尾; fling 结束后 (WAITING_REAL/IDLE)
+        // 的 MOVE 仍可重 engage → 不松手再下拉不受影响.
+        if (sState == IDLE || sState == DROPPING || sState == WAITING_REAL) {
             tryEngage(param.thisObject, y);
         }
         // SETTLING/SETTLED: 展开态, 由一次性 hook 接管
@@ -263,6 +360,8 @@ public final class StatusBarContinuity {
             return;
         }
         cancelPhaseAnim();
+        bar.removeCallbacks(sSwapPoll);
+        bar.removeCallbacks(sCollapseWatch);
         engage(bar);
         follow(ctrl, bar, y);
     }
@@ -273,6 +372,15 @@ public final class StatusBarContinuity {
         }
         if (!canSwipe(ctrl)) {
             return;
+        }
+        if (sLayersPending && panelFresh(bar)) {
+            // 旋转后首次手势: 面板已重排 → 补挂层 (fresh base) + 隐藏 contents
+            sLayersPending = false;
+            attachLayers(bar);
+            sShiftsFresh = captureShifts(bar);
+            hidePanelContents(bar);
+        } else if (!sShiftsFresh) {
+            sShiftsFresh = captureShifts(bar); // 旋转后栏 VISIBLE 重排 → 生效
         }
         if (!sOffsetValidated) {
             // engage 后布局已跑过 → 直接测量生效, 静默校正
@@ -290,39 +398,48 @@ public final class StatusBarContinuity {
         ride(bar, p);
     }
 
-    /** p: 0=真实栏位置, 1=面板自然位. 整栏 ty + 横向收窄 + 时钟半层 一起骑乘. */
+    /** p: 0=真实栏位置, 1=面板自然位. 整栏 ty + 左右位图半层一起骑乘. */
     private static void ride(View bar, float p) {
         bar.setTranslationY(-sOffset * (1f - p));
-        View g = sLeftGrp.get();
-        if (g != null && sDeltaLeft != 0f) {
-            g.setTranslationX(sDeltaLeft * (1f - p));
-        }
-        g = sRightGrp.get();
-        if (g != null && sDeltaRight != 0f) {
-            g.setTranslationX(sDeltaRight * (1f - p));
-        }
-        TextView clock = sClockLayer.get();
-        if (clock != null) {
-            clock.setVisibility(View.VISIBLE); // 对抗 stock 遍历隐藏无 tag 子 View
-            clock.setTranslationY(sClockBaseTy + sOffset * p);
-        }
+        rideLayers(p);
     }
 
-    /** engage: 量 offset/横向收窄, bar 就位于 -offset, 杂项图标隐藏, 时钟半层建立. */
+    /**
+     * engage: 量 offset/收窄量, 截两段位图挂半层, 隐藏面板 contents
+     * (跟手期位图独占 → 运营商/杂项/胶囊/时钟与真实栏像素级一致), 裁剪保护.
+     */
     private static void engage(View bar) {
+        boolean cycle = sBmpCached;
         sOffset = resolveOffset(bar);
         sTarget = new WeakReference<View>(bar);
-        restoreMisc();   // 先复位到上次的原值, 防止中断接管时把中间值当原值
-        captureMisc(bar);
-        hideMisc();
-        captureDeltas(bar);
-        buildClockLayer(bar);
+        restoreContentsAlpha(bar); // 先复位上次隐藏, 防把中间值当原值
+        restoreClip();             // 同上, 防重复记录
+        resetGroupShifts(bar);     // 同上, 残留分组位移会污染 captureShifts 测量
+        captureBitmaps(bar, false);
+        if (!sBmpOk) {
+            Port.log(TAG + ": capture unavailable, degrade");
+        }
+        // 旋转后首次手势: 面板树 GONE 未重排 (栏宽≠屏宽), base/shift 全是旧方向
+        // 几何 → 延迟挂层; follow 中重排完成后补挂 (fresh base), 防 X 错位.
+        sLayersPending = sBmpOk && !panelFresh(bar);
+        if (!sLayersPending) {
+            attachLayers(bar);
+            sShiftsFresh = captureShifts(bar);
+            hidePanelContents(bar);
+        } else {
+            sShiftsFresh = false;
+            Port.log(TAG + ": layers pending (stale panel after rotate)");
+        }
+        disableClip(bar);
+        captureTintStatics(bar);
         bar.setAlpha(1f);
         bar.setVisibility(View.VISIBLE);
         ride(bar, 0f);
         sState = FOLLOWING;
-        Port.log(TAG + ": engage offset=" + sOffset + " validated=" + sOffsetValidated
-                + " dxL=" + sDeltaLeft + " dxR=" + sDeltaRight);
+        Port.log(TAG + ": engage " + (cycle ? "cycle" : "fresh")
+                + " offset=" + sOffset + " validated=" + sOffsetValidated
+                + " bmp=" + sBmpOk + " shiftsFresh=" + sShiftsFresh
+                + " dxL=" + sLeftShift + " dxR=" + sRightShift);
     }
 
     // ----------------------------------------------------------------- offset
@@ -337,9 +454,15 @@ public final class StatusBarContinuity {
         return fallbackOffset(bar);
     }
 
-    /** 直接测量: 面板电池 layout 位置 GONE 后保留 (mTop 不清), 不受 translation 影响. */
+    /**
+     * 直接测量: 面板电池 layout 位置 GONE 后保留 (mTop 不清), 不受 translation 影响.
+     * 旋转新鲜度门控: 休眠栏几何过期 (宽≠当前屏宽) → 失败, follow 每步重试.
+     */
     private static float measureOffsetDirect(View bar) {
         try {
+            if (!panelFresh(bar)) {
+                return -1f;
+            }
             View realBar = sRealBar.get();
             if (realBar == null) {
                 return -1f;
@@ -364,10 +487,11 @@ public final class StatusBarContinuity {
     }
 
     /**
-     * 首次手势兜底 (面板栏未布局过): V14 几何 —
+     * 首次手势兜底 (面板栏未布局过/旋转后过期): V14 几何 —
      * 面板电池自然Y = 运行时 paddingTop + (面板栏高 − paddingTop − 电池高)/2.
      * 中置摄像头 (胶囊): paddingTop 与栏高各含胶囊高 → offset ≈ 胶囊高;
-     * 左/右置: 运行时值即无加成 → offset ≈ 0. 分机型自动生效.
+     * 左/右置: 运行时值即无加成 → offset ≈ 0. 分机型自动生效 (工具类实时值,
+     * 旋转后同样新鲜).
      */
     private static float fallbackOffset(View bar) {
         try {
@@ -403,152 +527,512 @@ public final class StatusBarContinuity {
         Port.log(TAG + ": settle-end offset=" + sOffset + " validated=" + sOffsetValidated);
     }
 
-    // -------------------------------------------------- 横向收窄 + 时钟半层
+    // ---------------------------------------------------------------- bitmaps
 
-    /** 横向收窄量 (V17 mLeft/mRightDistanceX 语义): 真实栏元素 X − 面板栏元素 X. */
-    private static void captureDeltas(View bar) {
-        sDeltaLeft = 0f;
-        sDeltaRight = 0f;
-        sLeftGrp = new WeakReference<View>(null);
-        sRightGrp = new WeakReference<View>(null);
+    /** 采集门: 真实栏内容当前可见 (fresh engage 时刻自然态; 循环 re-engage 时已隐藏). */
+    private static boolean realContentsExposed() {
         try {
             View realBar = sRealBar.get();
             if (realBar == null) {
-                return;
+                return false;
             }
-            ensureIds(bar.getContext());
-            float maxDelta = bar.getContext().getResources()
-                    .getDisplayMetrics().widthPixels / 2f;
-
-            // 右组: system_icon_area (含电池), 以电池为锚
-            View panelArea = sIconAreaId == 0 ? null : bar.findViewById(sIconAreaId);
-            if (panelArea != null) {
-                sRightGrp = new WeakReference<View>(panelArea);
-            }
-            View realBat = findBattery(realBar);
-            View panelBat = findBattery(bar);
-            if (realBat != null && panelBat != null) {
-                int[] a = new int[2];
-                int[] b = new int[2];
-                realBat.getLocationOnScreen(a);
-                panelBat.getLocationOnScreen(b);
-                float d = a[0] - b[0];
-                if (b[0] > 0 && Math.abs(d) < maxDelta && d != 0f) {
-                    sDeltaRight = d;
+            ensureIds(realBar.getContext());
+            if (sBatteryId != 0) {
+                View b = realBar.findViewById(sBatteryId);
+                if (b != null && b.getVisibility() == View.VISIBLE && b.getAlpha() > 0.5f) {
+                    return true;
                 }
             }
-
-            // 左组: operator_name_container (两侧都可见才有对齐意义)
-            if (sOperatorId != 0) {
-                View realOp = realBar.findViewById(sOperatorId);
-                View panelOp = bar.findViewById(sOperatorId);
-                if (realOp != null && panelOp != null
-                        && realOp.getVisibility() == View.VISIBLE
-                        && panelOp.getVisibility() == View.VISIBLE
-                        && realOp.getWidth() > 0 && panelOp.getWidth() > 0) {
-                    sLeftGrp = new WeakReference<View>(panelOp);
-                    int[] a = new int[2];
-                    int[] b = new int[2];
-                    realOp.getLocationOnScreen(a);
-                    panelOp.getLocationOnScreen(b);
-                    float d = a[0] - b[0];
-                    if (Math.abs(d) < maxDelta && d != 0f) {
-                        sDeltaLeft = d;
-                    }
+            if (sClockId != 0) {
+                View c = realBar.findViewById(sClockId);
+                if (c != null && c.getVisibility() == View.VISIBLE && c.getAlpha() > 0.5f) {
+                    return true;
                 }
             }
+            return false;
         } catch (Throwable t) {
-            Port.log(TAG + ": captureDeltas failed", t);
+            return false;
         }
     }
 
     /**
-     * 时钟半层: 真实栏时钟 (HwStatusBarClock, id=clock) 的像素级 TextView
-     * 拷贝, 挂到栏的父容器 (mQuickSettingsContainer, FrameLayout) 顶层,
-     * translation 定位到真实时钟位置, 之后随整栏运动骑乘.
+     * 两段位图采集. forceOpaque: 绕过可见性门 (收尾轮询重截 — 此时真实栏
+     * 内容正在淡入, alpha<1, 强制不透明画取得完整像素). 门失败且有缓存 →
+     * 复用缓存 (开-关循环); 无缓存 → 降级 (contents 不隐藏, 纯 tint 切换).
      */
-    private static void buildClockLayer(View bar) {
-        removeClockLayer();
-        sClockBaseTx = 0f;
-        sClockBaseTy = 0f;
+    private static void captureBitmaps(View bar, boolean forceOpaque) {
         try {
             View realBar = sRealBar.get();
             if (realBar == null) {
                 return;
             }
+            View rc = getRealContents(realBar);
+            if (rc == null || rc.getWidth() <= 0 || rc.getHeight() <= 0) {
+                if (!sBmpCached) {
+                    sBmpOk = false;
+                }
+                return;
+            }
+            if (!forceOpaque && !realContentsExposed()) {
+                if (!sBmpCached) {
+                    sBmpOk = false;
+                }
+                return;
+            }
             ensureIds(bar.getContext());
-            if (sClockId == 0) {
+            int w = rc.getWidth();
+            int h = rc.getHeight();
+            sSplitX = measureSplitX(realBar, rc);
+            if (sSplitX <= 0 || sSplitX >= w) {
+                if (!sBmpCached) {
+                    sBmpOk = false;
+                }
                 return;
             }
-            View realClockV = realBar.findViewById(sClockId);
-            if (!(realClockV instanceof TextView)
-                    || realClockV.getVisibility() != View.VISIBLE
-                    || realClockV.getWidth() <= 0 || realClockV.getHeight() <= 0) {
-                return; // 真实栏时钟不可见 (被关/未加载): 无半层
-            }
-            TextView realClock = (TextView) realClockV;
-            if (!(bar.getParent() instanceof FrameLayout)) {
-                return;
-            }
-            FrameLayout parent = (FrameLayout) bar.getParent();
-
-            TextView tv = new TextView(parent.getContext());
-            tv.setText(realClock.getText());
-            tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, realClock.getTextSize());
-            tv.setTextColor(realClock.getCurrentTextColor());
-            tv.setTypeface(realClock.getTypeface());
-            tv.setPaddingRelative(realClock.getPaddingStart(), 0,
-                    realClock.getPaddingEnd(), 0);
-            tv.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-            tv.setSingleLine(true);
-            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, realClock.getHeight());
-            parent.addView(tv, lp);
-
-            int[] pc = new int[2];
-            int[] cc = new int[2];
-            parent.getLocationOnScreen(pc);
-            realClock.getLocationOnScreen(cc);
-            sClockBaseTx = cc[0] - pc[0] - parent.getPaddingLeft();
-            sClockBaseTy = cc[1] - pc[1] - parent.getPaddingTop();
-            tv.setTranslationX(sClockBaseTx);
-            tv.setTranslationY(sClockBaseTy);
-            tv.setAlpha(realClock.getAlpha() <= 0f ? 1f : realClock.getAlpha());
-            sClockLayer = new WeakReference<TextView>(tv);
-            sClockParent = new WeakReference<ViewGroup>(parent);
+            int density = rc.getResources().getDisplayMetrics().densityDpi;
+            Bitmap left = Bitmap.createBitmap(sSplitX, h, Bitmap.Config.ARGB_8888);
+            Bitmap right = Bitmap.createBitmap(w - sSplitX, h, Bitmap.Config.ARGB_8888);
+            left.setDensity(density); // createBitmap 默认 160dpi, 不设会被 ImageView 错缩放
+            right.setDensity(density);
+            drawForcedOpaque(rc, left, right);
+            sLeftBmp = left;
+            sRightBmp = right;
+            sBmpCached = true;
+            sBmpOk = true;
+            sGeomW = bar.getResources().getDisplayMetrics().widthPixels; // 采集时屏宽
         } catch (Throwable t) {
-            Port.log(TAG + ": clock layer failed", t);
-        }
-    }
-
-    private static void removeClockLayer() {
-        TextView clock = sClockLayer.get();
-        sClockLayer = new WeakReference<TextView>(null);
-        if (clock != null) {
-            ViewGroup parent = sClockParent.get();
-            if (parent != null && clock.getParent() == parent) {
-                parent.removeView(clock);
+            Port.log(TAG + ": capture failed", t);
+            if (!sBmpCached) {
+                sBmpOk = false;
             }
         }
-        sClockParent = new WeakReference<ViewGroup>(null);
     }
 
-    private static void showClockLayer() {
-        TextView clock = sClockLayer.get();
-        if (clock != null) {
-            clock.setVisibility(View.VISIBLE);
+    /** 分割线: system_icon_area 左缘 (contents 坐标), 兜底电池左缘, 再兜底 0.6w. */
+    private static int measureSplitX(View realBar, View rc) {
+        int[] rcPos = new int[2];
+        rc.getLocationOnScreen(rcPos);
+        if (sIconAreaId != 0) {
+            View area = realBar.findViewById(sIconAreaId);
+            if (area != null && area.getWidth() > 0) {
+                int[] a = new int[2];
+                area.getLocationOnScreen(a);
+                float x = a[0] - rcPos[0];
+                if (x > 0f && x < rc.getWidth()) {
+                    return (int) x;
+                }
+            }
+        }
+        View bat = findBattery(realBar);
+        if (bat != null && bat.getWidth() > 0) {
+            int[] b = new int[2];
+            bat.getLocationOnScreen(b);
+            float x = b[0] - rcPos[0];
+            if (x > 0f && x < rc.getWidth()) {
+                return (int) x;
+            }
+        }
+        return (int) (rc.getWidth() * 0.6f);
+    }
+
+    /**
+     * 强制不透明绘制: 临时把 contents 树内 alpha<1 的 view 置 1, 同帧画完恢复
+     * (淡入 animator 下帧覆写, 安全). 左段画 [0, split), 右段平移画 [split, w).
+     */
+    private static void drawForcedOpaque(View rc, Bitmap left, Bitmap right) {
+        ArrayList<View> touched = new ArrayList<View>();
+        ArrayList<Float> orig = new ArrayList<Float>();
+        collectAlpha(rc, touched, orig);
+        int n = touched.size();
+        for (int i = 0; i < n; i++) {
+            touched.get(i).setAlpha(1f);
+        }
+        try {
+            rc.draw(new Canvas(left));
+            Canvas cr = new Canvas(right);
+            cr.translate(-sSplitX, 0f);
+            rc.draw(cr);
+        } finally {
+            for (int i = 0; i < n; i++) {
+                touched.get(i).setAlpha(orig.get(i));
+            }
         }
     }
 
-    private static void resetGroupX() {
-        View g = sLeftGrp.get();
-        if (g != null) {
-            g.setTranslationX(0f);
+    private static void collectAlpha(View v, ArrayList<View> touched, ArrayList<Float> orig) {
+        if (v.getAlpha() < 1f) {
+            touched.add(v);
+            orig.add(v.getAlpha());
         }
-        g = sRightGrp.get();
-        if (g != null) {
-            g.setTranslationX(0f);
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                collectAlpha(g.getChildAt(i), touched, orig);
+            }
         }
+    }
+
+    // ------------------------------------------------------------------ 半层
+
+    /** 位图半层挂栏父容器 (mQuickSettingsContainer, FrameLayout) 顶层, z 序在栏上. */
+    private static void attachLayers(View bar) {
+        removeLayers();
+        if (!sBmpOk || sLeftBmp == null || sRightBmp == null) {
+            return;
+        }
+        try {
+            ViewParent p = bar.getParent();
+            if (!(p instanceof FrameLayout)) {
+                sBmpOk = false; // 无法挂载 → 降级
+                return;
+            }
+            FrameLayout parent = (FrameLayout) p;
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            ImageView left = new ImageView(parent.getContext());
+            ImageView right = new ImageView(parent.getContext());
+            left.setImageBitmap(sLeftBmp);
+            right.setImageBitmap(sRightBmp);
+            parent.addView(left, lp);
+            parent.addView(right, lp);
+            sLeftLayer = new WeakReference<ImageView>(left);
+            sRightLayer = new WeakReference<ImageView>(right);
+            sLayerParentRef = new WeakReference<ViewGroup>(parent);
+            measureBase(bar);
+            rideLayers(0f);
+        } catch (Throwable t) {
+            Port.log(TAG + ": attach layers failed", t);
+            sBmpOk = false;
+            removeLayers();
+        }
+    }
+
+    /** 半层基准 translation (p=0 = 真实栏位置; 父容器内容坐标, 减 padding). */
+    private static void measureBase(View bar) {
+        try {
+            View realBar = sRealBar.get();
+            if (realBar == null) {
+                return;
+            }
+            View rc = getRealContents(realBar);
+            ViewParent p = bar.getParent();
+            if (rc == null || !(p instanceof FrameLayout)) {
+                return;
+            }
+            FrameLayout parent = (FrameLayout) p;
+            int[] rPos = new int[2];
+            int[] pPos = new int[2];
+            rc.getLocationOnScreen(rPos);
+            parent.getLocationOnScreen(pPos);
+            sBaseLeftTx = rPos[0] - pPos[0] - parent.getPaddingLeft();
+            sBaseRightTx = rPos[0] + sSplitX - pPos[0] - parent.getPaddingLeft();
+            sBaseTy = rPos[1] - pPos[1] - parent.getPaddingTop();
+        } catch (Throwable t) {
+            Port.log(TAG + ": measureBase failed", t);
+        }
+    }
+
+    /** 旋转新鲜度: 栏宽 ≈ 当前屏宽 (±25%, 旋转差远超容差). */
+    private static boolean panelFresh(View bar) {
+        int w = bar.getWidth();
+        if (w <= 0) {
+            return false;
+        }
+        int dw = bar.getResources().getDisplayMetrics().widthPixels;
+        return Math.abs(w - dw) * 4 <= dw;
+    }
+
+    /**
+     * 左右收窄量 (0.1, 运营商无关):
+     *   左: 面板时钟X − 真实时钟X (时钟锚; 容器缘两侧等宽测恒 0 — 上轮 X 移动丢失根因)
+     *   右: 面板电池X − 真实电池X (电池锚)
+     * 锚不可用退容器缘公式; 失败不清零 (保留上次有效值, 防跟手期 X 跳变).
+     */
+    private static boolean captureShifts(View bar) {
+        try {
+            View realBar = sRealBar.get();
+            if (realBar == null || !panelFresh(bar)) {
+                return false;
+            }
+            View rc = getRealContents(realBar);
+            View pc = getPanelContents(bar);
+            if (rc == null || pc == null || pc.getWidth() <= 0) {
+                return false;
+            }
+            ensureIds(bar.getContext());
+            float cap = bar.getResources().getDisplayMetrics().widthPixels * 0.75f;
+            View realClock = sClockId == 0 ? null : realBar.findViewById(sClockId);
+            View panelClock = sClockId == 0 ? null : bar.findViewById(sClockId);
+            float ls;
+            if (realClock != null && panelClock != null
+                    && realClock.getVisibility() == View.VISIBLE
+                    && panelClock.getVisibility() == View.VISIBLE) {
+                ls = screenX(panelClock) - screenX(realClock);
+            } else {
+                ls = (screenX(pc) + pc.getPaddingStart() - rc.getPaddingStart()) - screenX(rc);
+            }
+            View realBat = findBattery(realBar);
+            View panelBat = findBattery(bar);
+            float rs;
+            if (realBat != null && panelBat != null) {
+                rs = screenX(panelBat) - screenX(realBat);
+            } else {
+                rs = (screenX(pc) + pc.getWidth() - pc.getPaddingEnd() + rc.getPaddingEnd())
+                        - (screenX(rc) + rc.getWidth());
+            }
+            sLeftShift = Math.abs(ls) < cap ? ls : 0f;
+            sRightShift = Math.abs(rs) < cap ? rs : 0f;
+            return true;
+        } catch (Throwable t) {
+            Port.log(TAG + ": captureShifts failed", t);
+            return false;
+        }
+    }
+
+    private static float screenX(View v) {
+        int[] pos = new int[2];
+        v.getLocationOnScreen(pos);
+        return pos[0];
+    }
+
+    /** 半层骑乘: left/right tx = base + shift*p, ty = baseTy + offset*p. */
+    private static void rideLayers(float p) {
+        ImageView l = sLeftLayer.get();
+        ImageView r = sRightLayer.get();
+        if (l == null && r == null) {
+            return;
+        }
+        float ty = sBaseTy + sOffset * p;
+        if (l != null) {
+            l.setVisibility(View.VISIBLE); // 对抗 stock 遍历隐藏无 tag 子 View
+            l.setTranslationX(sBaseLeftTx + sLeftShift * p);
+            l.setTranslationY(ty);
+        }
+        if (r != null) {
+            r.setVisibility(View.VISIBLE);
+            r.setTranslationX(sBaseRightTx + sRightShift * p);
+            r.setTranslationY(ty);
+        }
+    }
+
+    private static void showLayers() {
+        ImageView l = sLeftLayer.get();
+        ImageView r = sRightLayer.get();
+        if (l != null) {
+            l.setVisibility(View.VISIBLE);
+        }
+        if (r != null) {
+            r.setVisibility(View.VISIBLE);
+        }
+    }
+
+    private static void removeLayers() {
+        detachLayer(sLeftLayer.get());
+        detachLayer(sRightLayer.get());
+        sLeftLayer = new WeakReference<ImageView>(null);
+        sRightLayer = new WeakReference<ImageView>(null);
+        sLayerParentRef = new WeakReference<ViewGroup>(null);
+    }
+
+    private static void detachLayer(ImageView layer) {
+        if (layer != null && layer.getParent() instanceof ViewGroup) {
+            ((ViewGroup) layer.getParent()).removeView(layer);
+        }
+    }
+
+    /**
+     * 收尾轮询重截 (3: 隐私胶囊/时钟分钟/电量): 真实栏内容开始重现 (布局已刷新)
+     * 时强制不透明重截 + 重测 base + 换图 + 吸附停靠位.
+     */
+    private static void resyncLayers(View bar) {
+        if (!sBmpOk) {
+            return;
+        }
+        captureBitmaps(bar, true);
+        measureBase(bar);
+        ImageView l = sLeftLayer.get();
+        ImageView r = sRightLayer.get();
+        if (l != null) {
+            l.setImageBitmap(sLeftBmp);
+        }
+        if (r != null) {
+            r.setImageBitmap(sRightBmp);
+        }
+        rideLayers(0f);
+        Port.log(TAG + ": resync layers split=" + sSplitX);
+    }
+
+    // -------------------------------------------------------------- contents
+
+    /** 降级 (无位图) 时不隐藏: 空栏风险, contents 保持可见走纯 tint 切换. */
+    private static void hidePanelContents(View bar) {
+        if (!sBmpOk) {
+            return;
+        }
+        View pc = getPanelContents(bar);
+        if (pc == null) {
+            return;
+        }
+        sContentsOrigAlpha = pc.getAlpha();
+        pc.setAlpha(0f);
+        sContentsHidden = true;
+    }
+
+    private static void restoreContentsAlpha(View bar) {
+        if (!sContentsHidden) {
+            return;
+        }
+        View pc = getPanelContents(bar);
+        if (pc != null) {
+            pc.setAlpha(sContentsOrigAlpha);
+        }
+        sContentsHidden = false;
+    }
+
+    // ----------------------------------------------- CC 栏横向移动 (分组)
+
+    /**
+     * CC 栏横向移动: settle/collapse 交叉淡化期 contents 分组 translationX.
+     * 左组 (运营商/时钟/杂项) 按左移量, 右组 (图标区) 按右移量 —
+     * 与位图半层 base+shift*p 的 X 骑乘对齐, contents 淡入/淡出时同步横移.
+     */
+    private static void addGroupShiftAnims(View bar, ArrayList<Animator> anims,
+            boolean toZero, long ms) {
+        View pc = getPanelContents(bar);
+        if (pc == null) {
+            return;
+        }
+        float ls = toZero ? 0f : -sLeftShift;
+        float rs = toZero ? 0f : -sRightShift;
+        addOneGroupAnim(sOperatorId == 0 ? null : pc.findViewById(sOperatorId), ls, anims, ms);
+        addOneGroupAnim(sClockId == 0 ? null : pc.findViewById(sClockId), ls, anims, ms);
+        addOneGroupAnim(sUnstableId == 0 ? null : pc.findViewById(sUnstableId), ls, anims, ms);
+        addOneGroupAnim(sIconAreaId == 0 ? null : pc.findViewById(sIconAreaId), rs, anims, ms);
+    }
+
+    private static void addOneGroupAnim(View v, float to,
+            ArrayList<Animator> anims, long ms) {
+        if (v != null && v.getTranslationX() != to) {
+            anims.add(objAnim(v, "translationX", v.getTranslationX(), to, ms));
+        }
+    }
+
+    /** 分组 translationX 硬复位 (engage 起点/settle 结束/hideBar/旋转降级). */
+    private static void resetGroupShifts(View bar) {
+        View pc = getPanelContents(bar);
+        if (pc == null) {
+            return;
+        }
+        if (sOperatorId != 0) {
+            resetOneGroupShift(pc.findViewById(sOperatorId));
+        }
+        if (sClockId != 0) {
+            resetOneGroupShift(pc.findViewById(sClockId));
+        }
+        if (sUnstableId != 0) {
+            resetOneGroupShift(pc.findViewById(sUnstableId));
+        }
+        if (sIconAreaId != 0) {
+            resetOneGroupShift(pc.findViewById(sIconAreaId));
+        }
+    }
+
+    private static void resetOneGroupShift(View v) {
+        if (v != null && v.getTranslationX() != 0f) {
+            v.setTranslationX(0f);
+        }
+    }
+
+    // ------------------------------------------------------------------ tint
+
+    /** 静态捕获: 纯色 tint (区域弃用 — settle 用空区域+纯色, 旋转安全). */
+    private static void captureTintStatics(View bar) {
+        try {
+            View realBar = sRealBar.get();
+            if (realBar == null) {
+                return;
+            }
+            View rc = getRealContents(realBar);
+            View pc = getPanelContents(bar);
+            if (rc == null || pc == null) {
+                return;
+            }
+            sRealTint = XposedHelpers.getIntField(rc, "mIconTint");
+            sPanelTint = XposedHelpers.getIntField(pc, "mIconTint");
+            View clock = sClockId == 0 ? null : realBar.findViewById(sClockId);
+            sRealClockRef = new WeakReference<View>(clock);
+        } catch (Throwable t) {
+            Port.log(TAG + ": tint capture failed", t);
+        }
+    }
+
+    /** settle 结束刷新 (CC 期间 DarkIconDispatcher 可能已重算面板 tint). */
+    private static void refreshTintStatics(View bar) {
+        try {
+            View pc = getPanelContents(bar);
+            if (pc != null) {
+                sPanelTint = XposedHelpers.getIntField(pc, "mIconTint");
+            }
+        } catch (Throwable t) {
+            // 保持旧值
+        }
+    }
+
+    /** 空区域 + 纯色: onDarkChanged 拷贝 Rect 进 mTintArea, 空区域 = 全域统一. */
+    private static void applyTint(View contents, int tint) {
+        if (contents == null) {
+            return;
+        }
+        try {
+            XposedHelpers.callMethod(contents, "onDarkChanged",
+                    new Rect(), Float.valueOf(0f), Integer.valueOf(tint));
+            XposedHelpers.callMethod(contents, "refreshTintOnLayout");
+        } catch (Throwable t) {
+            Port.log(TAG + ": applyTint failed", t);
+        }
+    }
+
+    // ------------------------------------------------------------------ clip
+
+    /** 半层/栏外移裁剪保护: 栏/contents/父容器 clipChildren+clipToPadding 全开. */
+    private static void disableClip(View bar) {
+        restoreClip();
+        try {
+            if (bar instanceof ViewGroup) {
+                addClip((ViewGroup) bar);
+            }
+            View pc = getPanelContents(bar);
+            if (pc instanceof ViewGroup) {
+                addClip((ViewGroup) pc);
+            }
+            ViewParent p = bar.getParent();
+            if (p instanceof ViewGroup) {
+                addClip((ViewGroup) p);
+            }
+        } catch (Throwable t) {
+            Port.log(TAG + ": disableClip failed", t);
+        }
+    }
+
+    private static void addClip(ViewGroup g) {
+        sClipViews.add(g);
+        sClipChildOrig.add(g.getClipChildren());
+        sClipPadOrig.add(g.getClipToPadding());
+        g.setClipChildren(false);
+        g.setClipToPadding(false);
+    }
+
+    private static void restoreClip() {
+        for (int i = 0; i < sClipViews.size(); i++) {
+            ViewGroup g = sClipViews.get(i);
+            Boolean child = i < sClipChildOrig.size() ? sClipChildOrig.get(i) : Boolean.TRUE;
+            Boolean pad = i < sClipPadOrig.size() ? sClipPadOrig.get(i) : Boolean.TRUE;
+            g.setClipChildren(child.booleanValue());
+            g.setClipToPadding(pad.booleanValue());
+        }
+        sClipViews.clear();
+        sClipChildOrig.clear();
+        sClipPadOrig.clear();
     }
 
     // --------------------------------------------------- settle / collapse
@@ -569,44 +1053,48 @@ public final class StatusBarContinuity {
         }
     }
 
-    /** 展开 settle: 跟手值 -> 自然位 (无整栏淡入); 杂项图标淡入, 时钟半层淡出. */
+    /**
+     * 展开 settle: 整栏 ty→0; contents 先隐形切 tint (无闪) 再淡入,
+     * 位图半层同步淡出并骑到自然位 (交叉淡化, 整栏无淡入).
+     */
     private static void onSettle(final View bar, XC_MethodHook.MethodHookParam param) {
-        if (sState != FOLLOWING && sState != SETTLING
-                && sState != COLLAPSING && sState != DROPPING) {
+        if (sState != FOLLOWING && sState != SETTLING && sState != COLLAPSING
+                && sState != DROPPING && sState != WAITING_REAL) {
             return; // 未跟手 (锁屏 shade / 补偿路径), stock 淡入
         }
         sState = SETTLING;
         cancelPhaseAnim();
+        bar.removeCallbacks(sCollapseWatch);
+        bar.removeCallbacks(sSwapPoll);
         bar.setVisibility(View.VISIBLE); // 同帧对抗 stock 前置 GONE
-        showClockLayer();                // 对抗 stock 遍历隐藏无 tag 子 View
+        showLayers();
+        resetGroupShifts(bar);        // 残留位移会污染 shift 测量
+        captureShifts(bar);           // 入口刷新: settle 分组横移目标用新值
+        measureBase(bar);             // 层基准同步刷新 (横竖屏各自会话内自洽)
+        final View pc = getPanelContents(bar);
+        applyTint(pc, sPanelTint); // contents 不可见时切换 → 无闪
         ArrayList<Animator> anims = new ArrayList<Animator>();
         anims.add(objAnim(bar, "translationY", bar.getTranslationY(), 0f, SETTLE_MS));
-        View g = sLeftGrp.get();
-        if (g != null && sDeltaLeft != 0f) {
-            anims.add(objAnim(g, "translationX", g.getTranslationX(), 0f, SETTLE_MS));
+        anims.add(alphaAnim(bar, bar.getAlpha(), 1f, CROSS_IN_MS)); // 从收起淡出中断续接
+        if (pc != null && sContentsHidden) {
+            anims.add(alphaAnim(pc, 0f, sContentsOrigAlpha, CROSS_MS)); // contents 淡入
         }
-        g = sRightGrp.get();
-        if (g != null && sDeltaRight != 0f) {
-            anims.add(objAnim(g, "translationX", g.getTranslationX(), 0f, SETTLE_MS));
+        addGroupShiftAnims(bar, anims, true, SETTLE_MS); // CC 栏横向滑入真实→面板几何
+        ImageView l = sLeftLayer.get();
+        if (l != null) {
+            anims.add(alphaAnim(l, l.getAlpha(), 0f, CROSS_MS)); // 位图淡出
+            anims.add(objAnim(l, "translationX", l.getTranslationX(),
+                    sBaseLeftTx + sLeftShift, SETTLE_MS));
+            anims.add(objAnim(l, "translationY", l.getTranslationY(),
+                    sBaseTy + sOffset, SETTLE_MS));
         }
-        for (int i = 0; i < sMisc.size(); i++) {
-            final View v = sMisc.get(i);
-            final float base = i < sMiscBase.length ? sMiscBase[i] : 1f;
-            ObjectAnimator fade = ObjectAnimator.ofFloat(v, "alpha", v.getAlpha(), base);
-            fade.setInterpolator(FOSI);
-            fade.setDuration(MISC_FADE_MS);
-            fade.setStartDelay(MISC_FADE_DELAY_MS);
-            anims.add(fade);
-        }
-        TextView clock = sClockLayer.get();
-        if (clock != null) {
-            anims.add(objAnim(clock, "translationY",
-                    clock.getTranslationY(), sClockBaseTy + sOffset, SETTLE_MS));
-            ObjectAnimator cf = ObjectAnimator.ofFloat(clock, "alpha", clock.getAlpha(), 0f);
-            cf.setInterpolator(FOSI);
-            cf.setDuration(CLOCK_FADE_MS);
-            cf.setStartDelay(CLOCK_FADE_DELAY_MS);
-            anims.add(cf);
+        ImageView r = sRightLayer.get();
+        if (r != null) {
+            anims.add(alphaAnim(r, r.getAlpha(), 0f, CROSS_MS));
+            anims.add(objAnim(r, "translationX", r.getTranslationX(),
+                    sBaseRightTx + sRightShift, SETTLE_MS));
+            anims.add(objAnim(r, "translationY", r.getTranslationY(),
+                    sBaseTy + sOffset, SETTLE_MS));
         }
         AnimatorSet set = new AnimatorSet();
         set.playTogether(anims);
@@ -618,9 +1106,10 @@ public final class StatusBarContinuity {
             @Override
             public void onAnimationEnd(Animator a) {
                 bar.setTranslationY(0f);
-                resetGroupX();
-                restoreMisc();
+                resetGroupShifts(bar); // 分组精确归零
+                restoreContentsAlpha(bar);
                 refreshOffset(bar);
+                refreshTintStatics(bar);
                 if (sState == SETTLING) {
                     sState = SETTLED;
                 }
@@ -640,47 +1129,69 @@ public final class StatusBarContinuity {
         });
         sPhaseAnim = set;
         param.setResult(set);
-        Port.log(TAG + ": settle from ty=" + bar.getTranslationY() + " misc=" + sMisc.size());
+        Port.log(TAG + ": settle from ty=" + bar.getTranslationY() + " bmp=" + sBmpOk);
     }
 
     /**
-     * 收起一次性: 0→−offset 回位 (无 stock alpha 淡出), 杂项图标不动
-     * (停靠态须与真实栏一致), 时钟半层淡回; 结束停靠等 onPanelCollapsed 硬切.
+     * 收起一次性: 整栏 ty→−offset; contents 淡出 / 位图半层淡入 (交叉淡化,
+     * 无任何 tint 硬切 — 位图像素本身即真实色, 二轮 "收起闪" 根除);
+     * 结束停靠进入收尾轮询.
      */
     private static void onCollapse(final View bar, XC_MethodHook.MethodHookParam param) {
         if (sState != FOLLOWING && sState != SETTLING && sState != SETTLED
                 && sState != COLLAPSING && sState != WAITING_REAL) {
             return; // 未接管, stock 原地淡出
         }
+        // 横竖屏新鲜度: CC 开着旋转 → 位图/基准/位移全是旧方向几何 (真实栏 GONE
+        // 无法重测), 硬走漂移必横移错位 — 清场交还 stock 原生收起 (新方向自洽).
+        if (sGeomW != 0
+                && sGeomW != bar.getResources().getDisplayMetrics().widthPixels) {
+            cancelPhaseAnim();
+            bar.removeCallbacks(sSwapPoll);
+            resetGroupShifts(bar);
+            restoreContentsAlpha(bar);
+            removeLayers();
+            restoreClip();
+            restoreForcedVis();
+            bar.setAlpha(1f);
+            bar.setTranslationY(0f);
+            sState = IDLE;
+            Port.log(TAG + ": collapse degrade (orientation changed)");
+            return; // 不 setResult → stock 自建动画原样跑
+        }
         sState = COLLAPSING;
         cancelPhaseAnim();
         bar.setVisibility(View.VISIBLE);
-        showClockLayer();
+        showLayers();
+        View pc = getPanelContents(bar);
         ArrayList<Animator> anims = new ArrayList<Animator>();
         anims.add(objAnim(bar, "translationY", bar.getTranslationY(), -sOffset, SETTLE_MS));
-        View g = sLeftGrp.get();
-        if (g != null && sDeltaLeft != 0f) {
-            anims.add(objAnim(g, "translationX", g.getTranslationX(), sDeltaLeft, SETTLE_MS));
+        addGroupShiftAnims(bar, anims, false, SETTLE_MS); // CC 栏横向滑出面板→真实几何
+        if (sBmpOk) {
+            // CC 栏整体淡出 (chrome+contents 一起, sContentsHidden 门在 settle 后恒
+            // false 曾致不淡出), 位图半层同步淡入 — 交叉淡化, 无任何 tint 硬切
+            anims.add(alphaAnim(bar, bar.getAlpha(), 0f, CROSS_IN_MS));
+        } else {
+            applyTint(pc, sRealTint); // 降级: 无位图交叉淡化, 硬切回真实色 (二轮行为)
         }
-        g = sRightGrp.get();
-        if (g != null && sDeltaRight != 0f) {
-            anims.add(objAnim(g, "translationX", g.getTranslationX(), sDeltaRight, SETTLE_MS));
+        ImageView l = sLeftLayer.get();
+        if (l != null) {
+            anims.add(alphaAnim(l, l.getAlpha(), 1f, CROSS_IN_MS)); // 位图接管
+            anims.add(objAnim(l, "translationX", l.getTranslationX(), sBaseLeftTx, SETTLE_MS));
+            anims.add(objAnim(l, "translationY", l.getTranslationY(), sBaseTy, SETTLE_MS));
         }
-        TextView clock = sClockLayer.get();
-        if (clock != null) {
-            anims.add(objAnim(clock, "translationY",
-                    clock.getTranslationY(), sClockBaseTy, SETTLE_MS));
-            ObjectAnimator cf = ObjectAnimator.ofFloat(clock, "alpha", clock.getAlpha(), 1f);
-            cf.setInterpolator(FOSI);
-            cf.setDuration(CLOCK_FADE_MS);
-            cf.setStartDelay(CLOCK_FADE_DELAY_MS);
-            anims.add(cf);
+        ImageView r = sRightLayer.get();
+        if (r != null) {
+            anims.add(alphaAnim(r, r.getAlpha(), 1f, CROSS_IN_MS));
+            anims.add(objAnim(r, "translationX", r.getTranslationX(), sBaseRightTx, SETTLE_MS));
+            anims.add(objAnim(r, "translationY", r.getTranslationY(), sBaseTy, SETTLE_MS));
         }
         AnimatorSet set = new AnimatorSet();
         set.playTogether(anims);
         set.addListener(new Animator.AnimatorListener() {
             @Override
             public void onAnimationStart(Animator a) {
+                showLayers(); // stock 子遍历隐藏后再确保可见
             }
 
             @Override
@@ -698,36 +1209,88 @@ public final class StatusBarContinuity {
             }
         });
         sPhaseAnim = set;
-        param.setResult(set);
-        Port.log(TAG + ": collapse drift to " + (-sOffset));
+        // 自启: stock 外层 setDuration(卡片300ms) 会递归覆盖子 AnimatorSet 时长
+        // → 位图 100ms 淡入被拖成 300ms, 横跨整个 fling 收起, 中途几乎不可见
+        // ("复制状态栏没有正常淡入" 根因). 自启保住设计时长, 不受外层摆布.
+        set.start();
+        AnimatorSet dummy = new AnimatorSet();
+        dummy.setDuration(SETTLE_MS); // 占位: 外层 get(0) 兜底时长, 播放无害空集
+        param.setResult(dummy);
+        bar.removeCallbacks(sCollapseWatch);
+        bar.postDelayed(sCollapseWatch, SETTLE_MS + 150L); // 停滞保险
+        ImageView lg = sLeftLayer.get();
+        Port.log(TAG + ": collapse drift to " + (-sOffset) + " layerA="
+                + (lg == null ? "none" : String.valueOf(lg.getAlpha())));
     }
 
-    /** 收起漂移结束: 已见 onPanelCollapsed → 即时硬切; 否则停靠等硬切. */
+    /** 收起漂移结束: 停靠真实栏位置, 启动收尾轮询 (重截窗口 + 重现探针). */
     private static void finishCollapse(View bar) {
-        if (sSwapPending) {
-            sSwapPending = false;
-            hideBar(bar);
-            sState = IDLE;
-            Port.log(TAG + ": swap (drift-end)");
-        } else if (sState == COLLAPSING) {
+        if (sState == COLLAPSING) {
             sState = WAITING_REAL;
+            startSwapPoll(bar);
             Port.log(TAG + ": parked at -" + sOffset);
         }
     }
 
-    /** 真实栏可重现 (PanelBar.onPanelCollapsed, scrim 已收回): 停靠硬切. */
-    private static void onRealBarCollapsed() {
-        View bar = sTarget.get();
-        if (bar == null) {
-            return;
+    /** 点6: 收尾轮询启动 (sResyncDone 重置 → 隐私胶囊重截窗口开启). */
+    private static void startSwapPoll(View bar) {
+        sPollCount = 0;
+        sResyncDone = false;
+        bar.removeCallbacks(sSwapPoll);
+        bar.postDelayed(sSwapPoll, POLL_MS);
+    }
+
+    /** 真实栏内容重现探针: 时钟/电池 isShown 且 alpha≥0.99 (GONE/淡入未完 → false;
+     *  0.9 会残留 10% 透出壁纸, 位图移除瞬间 = 收起闪). */
+    private static boolean realBarShown() {
+        try {
+            View realBar = sRealBar.get();
+            if (realBar == null) {
+                return false;
+            }
+            View clock = sRealClockRef.get();
+            if (clock == null && sClockId != 0) {
+                clock = realBar.findViewById(sClockId);
+            }
+            if (clock != null && clock.isShown() && clock.getAlpha() >= 0.99f) {
+                return true;
+            }
+            View bat = findBattery(realBar);
+            return bat != null && bat.isShown() && bat.getAlpha() >= 0.99f;
+        } catch (Throwable t) {
+            return false;
         }
-        if (sState == WAITING_REAL) {
-            hideBar(bar);
-            sState = IDLE;
-            Port.log(TAG + ": swap");
-        } else if (sState == COLLAPSING || sState == DROPPING) {
-            sSwapPending = true;
+    }
+
+    /** 真实栏内容开始重现 (布局已刷新, 淡入中): 隐私胶囊重截窗口触发条件 (3). */
+    private static boolean realShowFading() {
+        try {
+            View realBar = sRealBar.get();
+            if (realBar == null) {
+                return false;
+            }
+            View clock = sRealClockRef.get();
+            if (clock == null && sClockId != 0) {
+                clock = realBar.findViewById(sClockId);
+            }
+            if (clock != null && clock.getVisibility() == View.VISIBLE && clock.getAlpha() > 0.01f) {
+                return true;
+            }
+            View bat = findBattery(realBar);
+            return bat != null && bat.getVisibility() == View.VISIBLE && bat.getAlpha() > 0.01f;
+        } catch (Throwable t) {
+            return false;
         }
+    }
+
+    /** 真实栏已重现: 硬切收尾 — 栏复位 stock 隐藏态, 半层/裁剪/强制可见全清. */
+    private static void swapNow(View bar) {
+        bar.removeCallbacks(sSwapPoll);
+        bar.removeCallbacks(sCollapseWatch);
+        hideBar(bar);
+        restoreForcedVis();
+        sState = IDLE;
+        Port.log(TAG + ": swap");
     }
 
     // ------------------------------------------------------------- drop-back
@@ -751,33 +1314,20 @@ public final class StatusBarContinuity {
         if (showingType(ctrl) != 0) {
             return; // 展开已触发 (settle 已接管, 状态应为 SETTLING)
         }
-        // drop-back: 无淡入, 一次性回位 −offset; 杂项图标淡回, 时钟随行;
-        // 结束即时隐藏 (面板未过阈值, scrim 收回快, 真实栏未被遮挡 → 无空缺)
+        // drop-back: 位图保持不透明随行回位 (无淡入), 结束停靠进入收尾轮询
         sState = DROPPING;
         cancelPhaseAnim();
         ArrayList<Animator> anims = new ArrayList<Animator>();
         anims.add(objAnim(bar, "translationY", bar.getTranslationY(), -sOffset, DROP_MS));
-        View g = sLeftGrp.get();
-        if (g != null && sDeltaLeft != 0f) {
-            anims.add(objAnim(g, "translationX", g.getTranslationX(), sDeltaLeft, DROP_MS));
+        ImageView l = sLeftLayer.get();
+        if (l != null) {
+            anims.add(objAnim(l, "translationX", l.getTranslationX(), sBaseLeftTx, DROP_MS));
+            anims.add(objAnim(l, "translationY", l.getTranslationY(), sBaseTy, DROP_MS));
         }
-        g = sRightGrp.get();
-        if (g != null && sDeltaRight != 0f) {
-            anims.add(objAnim(g, "translationX", g.getTranslationX(), sDeltaRight, DROP_MS));
-        }
-        for (int i = 0; i < sMisc.size(); i++) {
-            View v = sMisc.get(i);
-            float base = i < sMiscBase.length ? sMiscBase[i] : 1f;
-            ObjectAnimator fade = ObjectAnimator.ofFloat(v, "alpha", v.getAlpha(), base);
-            fade.setInterpolator(FOSI);
-            fade.setDuration(MISC_FADE_MS);
-            fade.setStartDelay(MISC_FADE_DELAY_MS);
-            anims.add(fade);
-        }
-        TextView clock = sClockLayer.get();
-        if (clock != null) {
-            anims.add(objAnim(clock, "translationY",
-                    clock.getTranslationY(), sClockBaseTy, DROP_MS));
+        ImageView r = sRightLayer.get();
+        if (r != null) {
+            anims.add(objAnim(r, "translationX", r.getTranslationX(), sBaseRightTx, DROP_MS));
+            anims.add(objAnim(r, "translationY", r.getTranslationY(), sBaseTy, DROP_MS));
         }
         AnimatorSet set = new AnimatorSet();
         set.playTogether(anims);
@@ -807,9 +1357,46 @@ public final class StatusBarContinuity {
 
     private static void finishDrop(View bar) {
         if (sState == DROPPING) {
-            hideBar(bar);
-            sState = IDLE;
+            sState = WAITING_REAL;
+            startSwapPoll(bar);
+            Port.log(TAG + ": drop parked, polling real bar");
         }
+    }
+
+    // ---------------------------------------------------------- 收尾宿主 (点6)
+
+    private static boolean inEndgame() {
+        return sState == COLLAPSING || sState == DROPPING || sState == WAITING_REAL;
+    }
+
+    private static void forceVisible(View host) {
+        if (host.getVisibility() != View.VISIBLE) {
+            host.setVisibility(View.VISIBLE);
+        }
+        if (!sForcedVis.contains(host)) {
+            sForcedVis.add(host);
+        }
+    }
+
+    /** 轮询期间反复对抗 stock 的 INVISIBLE 下发 (面板/shade 根). */
+    private static void keepHostsVisible(View bar) {
+        for (int i = 0; i < sForcedVis.size(); i++) {
+            View host = sForcedVis.get(i);
+            if (host != null && host.getVisibility() != View.VISIBLE) {
+                host.setVisibility(View.VISIBLE);
+            }
+        }
+    }
+
+    /** 交还 stock: 收起态即 INVISIBLE (PanelBar L269 / applyVisibility L303). */
+    private static void restoreForcedVis() {
+        for (int i = 0; i < sForcedVis.size(); i++) {
+            View host = sForcedVis.get(i);
+            if (host != null) {
+                host.setVisibility(View.INVISIBLE);
+            }
+        }
+        sForcedVis.clear();
     }
 
     // ---------------------------------------------------------------- helpers
@@ -826,14 +1413,16 @@ public final class StatusBarContinuity {
         }
     }
 
-    /** 复位 stock 隐藏态 (GONE + alpha 1 + ty 0 + 横向收窄归零 + 杂项/时钟复位). */
+    /** 复位 stock 隐藏态 (GONE + alpha 1 + ty 0 + contents/分组复位 + 半层/裁剪清除). */
     private static void hideBar(View bar) {
         bar.setVisibility(View.GONE);
         bar.setAlpha(1f);
         bar.setTranslationY(0f);
-        resetGroupX();
-        restoreMisc();
-        removeClockLayer();
+        restoreContentsAlpha(bar);
+        resetGroupShifts(bar);
+        sLayersPending = false;
+        removeLayers();
+        restoreClip();
     }
 
     private static ObjectAnimator objAnim(View v, String prop, float from, float to, long ms) {
@@ -843,49 +1432,33 @@ public final class StatusBarContinuity {
         return a;
     }
 
-    private static void captureMisc(View bar) {
+    private static ObjectAnimator alphaAnim(View v, float from, float to, long ms) {
+        return objAnim(v, "alpha", from, to, ms);
+    }
+
+    private static View getRealContents(View realBar) {
+        ensureIds(realBar.getContext());
+        return sContentsId == 0 ? null : realBar.findViewById(sContentsId);
+    }
+
+    private static View getPanelContents(View bar) {
         ensureIds(bar.getContext());
-        sMisc.clear();
-        for (int id : sMiscIds) {
-            if (id != 0) {
-                View v = bar.findViewById(id);
-                if (v != null) {
-                    sMisc.add(v);
-                }
-            }
-        }
-        sMiscBase = new float[sMisc.size()];
-        for (int i = 0; i < sMisc.size(); i++) {
-            sMiscBase[i] = sMisc.get(i).getAlpha();
-        }
-    }
-
-    private static void hideMisc() {
-        for (int i = 0; i < sMisc.size(); i++) {
-            sMisc.get(i).setAlpha(0f);
-        }
-    }
-
-    private static void restoreMisc() {
-        for (int i = 0; i < sMisc.size(); i++) {
-            float base = i < sMiscBase.length ? sMiscBase[i] : 1f;
-            sMisc.get(i).setAlpha(base);
-        }
+        return sContentsId == 0 ? null : bar.findViewById(sContentsId);
     }
 
     private static void ensureIds(Context ctx) {
-        if (sMiscIds != null) {
+        if (sIdsReady) {
             return;
         }
         Resources r = ctx.getResources();
-        sMiscIds = new int[MISC_NAMES.length];
-        for (int i = 0; i < MISC_NAMES.length; i++) {
-            sMiscIds[i] = r.getIdentifier(MISC_NAMES[i], "id", "com.android.systemui");
-        }
-        sBatteryId = r.getIdentifier("battery", "id", "com.android.systemui");
-        sClockId = r.getIdentifier("clock", "id", "com.android.systemui");
-        sOperatorId = r.getIdentifier("operator_name_container", "id", "com.android.systemui");
-        sIconAreaId = r.getIdentifier("system_icon_area", "id", "com.android.systemui");
+        String pkg = "com.android.systemui";
+        sBatteryId = r.getIdentifier("battery", "id", pkg);
+        sClockId = r.getIdentifier("clock", "id", pkg);
+        sIconAreaId = r.getIdentifier("system_icon_area", "id", pkg);
+        sContentsId = r.getIdentifier("status_bar_contents", "id", pkg);
+        sOperatorId = r.getIdentifier("operator_name_container", "id", pkg);
+        sUnstableId = r.getIdentifier("system_icon_unstable", "id", pkg);
+        sIdsReady = true;
     }
 
     private static View findBattery(View root) {
