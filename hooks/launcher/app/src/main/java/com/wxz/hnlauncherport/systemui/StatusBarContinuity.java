@@ -164,8 +164,10 @@ public final class StatusBarContinuity {
     private static final ArrayList<ViewGroup> sClipViews = new ArrayList<ViewGroup>();
     private static final ArrayList<Boolean> sClipChildOrig = new ArrayList<Boolean>();
     private static final ArrayList<Boolean> sClipPadOrig = new ArrayList<Boolean>();
-    /** 点6: 收尾期强制 VISIBLE 的宿主 (面板/shade 根), 硬切时恢复 INVISIBLE. */
+    /** 点6: 收尾期强制 VISIBLE 的宿主 (面板/shade 根), swap 时恢复各自被强制前的原值. */
     private static final ArrayList<View> sForcedVis = new ArrayList<View>();
+    /** 点6: 各宿主被强制前的原始可见性 (swap 按原值归还, 不硬编码 INVISIBLE). */
+    private static final ArrayList<Integer> sForcedVisOrig = new ArrayList<Integer>();
     /** 点6: swap 轮询 (真实栏内容重现探针 + 隐私胶囊重截窗口). */
     private static int sPollCount;
     private static boolean sResyncDone;
@@ -337,11 +339,17 @@ public final class StatusBarContinuity {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                         try {
-                            if ((Boolean) param.args[1] || !inEndgame()) {
+                            if (!inEndgame()) {
                                 return;
                             }
                             Object pv = XposedHelpers.getObjectField(param.thisObject, "mPanel");
-                            if (pv instanceof View) {
+                            if (!(pv instanceof View)) {
+                                return;
+                            }
+                            if ((Boolean) param.args[1]) {
+                                // stock 自身复显面板: 撤销对抗记录 (swap 不回置)
+                                unforceVisible((View) pv);
+                            } else {
                                 forceVisible((View) pv);
                             }
                         } catch (Throwable t) {
@@ -365,7 +373,14 @@ public final class StatusBarContinuity {
                             Object root = XposedHelpers.getObjectField(
                                     param.thisObject, "mNotificationShadeView");
                             if (root instanceof View) {
-                                forceVisible((View) root);
+                                if (((View) root).getVisibility() == View.VISIBLE) {
+                                    // stock applyVisibility 落点即 VISIBLE (如 21:23:11.229
+                                    // 快速重开后的 true): shade 根当前就该显示 — 撤销对抗记录,
+                                    // 防 swap 把 stock 已复显的根打回 INVISIBLE (真栏+导航栏消失根因)
+                                    unforceVisible((View) root);
+                                } else {
+                                    forceVisible((View) root);
+                                }
                             }
                         } catch (Throwable t) {
                             Port.log(TAG + ": keep shade root failed", t);
@@ -440,6 +455,13 @@ public final class StatusBarContinuity {
             return;
         }
         if (showingType(ctrl) != 0) {
+            // 停靠期重开 (新下滑, stock 面板仍在显示): 停靠替身即将被新开面板
+            // 遮盖而过时, 不撤必成 "复制层停原位 + CC 同现" 双层残影 —
+            // 撤层并复位 CC 栏为 stock 可接管态; 上滑 (收尾延续) 不受影响.
+            if (sState == WAITING_REAL
+                    && y - XposedHelpers.getFloatField(ctrl, "mInitialY") > 0f) {
+                abandonParked();
+            }
             bail("showingType=" + showingType(ctrl)); // 已有面板在显示 (收起 fling 中/切换), 无连贯
             return;
         }
@@ -733,7 +755,8 @@ public final class StatusBarContinuity {
                 + " offset=" + sOffset + " validated=" + sOffsetValidated
                 + " bmp=" + sBmpOk + " shiftsFresh=" + sShiftsFresh
                 + " panelFresh=" + panelFresh(bar)
-                + " dxL=" + sLeftShift + " dxR=" + sRightShift);
+                + " dxL=" + sLeftShift + " dxR=" + sRightShift
+                + " " + layerChainState());
     }
 
     // ----------------------------------------------------------------- offset
@@ -889,6 +912,26 @@ public final class StatusBarContinuity {
             left.setDensity(density); // createBitmap 默认 160dpi, 不设会被 ImageView 错缩放
             right.setDensity(density);
             drawForcedOpaque(rc, left, right);
+            // 截空防护: 真实栏内容此刻被 stock 隐藏/移出 → 全透明位图
+            // 会让整轮连贯渲染空白 ("复制层消失不归"). 检出即弃, 保留旧好缓存.
+            int pl = bmpMaxAlpha(left);
+            int pr = bmpMaxAlpha(right);
+            View bat = findBattery(realBar);
+            View clk = sClockId == 0 ? null : realBar.findViewById(sClockId);
+            if ((pl <= 0 || pr <= 0) && cacheFresh(bar)
+                    && sLeftBmp != null && sRightBmp != null
+                    && bmpMaxAlpha(sLeftBmp) > 0 && bmpMaxAlpha(sRightBmp) > 0) {
+                Port.log(TAG + ": capture blank (pxL=" + pl + " pxR=" + pr
+                        + ") keep cache rc[v=" + rc.getVisibility()
+                        + ",a=" + rc.getAlpha() + ",ty=" + rc.getTranslationY() + "]"
+                        + " bat[" + (bat == null ? "null" : "v=" + bat.getVisibility()
+                        + ",a=" + bat.getAlpha() + ",ty=" + bat.getTranslationY()) + "]"
+                        + " clk[" + (clk == null ? "null" : "v=" + clk.getVisibility()
+                        + ",a=" + clk.getAlpha() + ",ty=" + clk.getTranslationY()) + "]");
+                return;
+            }
+            Port.log(TAG + ": capture pxL=" + pl + " pxR=" + pr
+                    + " rc[v=" + rc.getVisibility() + ",a=" + rc.getAlpha() + "]");
             sLeftBmp = left;
             sRightBmp = right;
             sBmpCached = true;
@@ -1260,6 +1303,84 @@ public final class StatusBarContinuity {
         }
     }
 
+    /** 诊断: 层渲染链状态 (自身 alpha/vis/位移/位图 + 祖先链 visibility/alpha, 定位不可见断点). */
+    private static String layerChainState() {
+        ImageView l = sLeftLayer.get();
+        if (l == null) {
+            return "layer=none";
+        }
+        int[] sp = new int[2];
+        l.getLocationOnScreen(sp);
+        StringBuilder sb = new StringBuilder("layer[a=").append(l.getAlpha())
+                .append(",v=").append(l.getVisibility())
+                .append(",tx=").append(l.getTranslationX())
+                .append(",ty=").append(l.getTranslationY())
+                .append(",bmp=").append(sLeftBmp == null ? "null"
+                        : sLeftBmp.getWidth() + "x" + sLeftBmp.getHeight())
+                .append(",wh=").append(l.getWidth()).append("x").append(l.getHeight())
+                .append(",pxL=").append(sLeftBmp == null ? "?" : bmpMaxAlpha(sLeftBmp))
+                .append(",pxR=").append(sRightBmp == null ? "?" : bmpMaxAlpha(sRightBmp))
+                .append(",scr=[").append(sp[0]).append(",").append(sp[1]).append("]")
+                .append(",shown=").append(l.isShown())
+                .append("] chain:");
+        View c = l;
+        int depth = 0;
+        while (c != null && depth < 10) {
+            ViewParent p = c.getParent();
+            if (!(p instanceof View)) {
+                sb.append("|root");
+                break;
+            }
+            View pv = (View) p;
+            int[] pp = new int[2];
+            pv.getLocationOnScreen(pp);
+            sb.append("|").append(pv.getClass().getSimpleName())
+                    .append("[v=").append(pv.getVisibility())
+                    .append(",a=").append(pv.getAlpha())
+                    .append(",tx=").append(pv.getTranslationX())
+                    .append(",ty=").append(pv.getTranslationY())
+                    .append(",scr=[").append(pp[0]).append(",").append(pp[1]).append("]")
+                    .append("]");
+            c = pv;
+            depth++;
+        }
+        // 真实栏内容参照 (层应停靠其位置)
+        try {
+            View realBar = sRealBar.get();
+            if (realBar != null) {
+                View rc = getRealContents(realBar);
+                if (rc != null) {
+                    int[] rp = new int[2];
+                    rc.getLocationOnScreen(rp);
+                    sb.append(" rc=[").append(rp[0]).append(",").append(rp[1]).append("]");
+                }
+            }
+        } catch (Throwable t) {
+            // 忽略
+        }
+        return sb.toString();
+    }
+
+    /** 诊断: 位图稀疏网格最大 alpha (0=全透明, 255=有不透明像素; stride 16). */
+    private static int bmpMaxAlpha(Bitmap b) {
+        try {
+            int w = b.getWidth();
+            int h = b.getHeight();
+            int max = 0;
+            for (int y = h / 4; y < h; y += 16) {
+                for (int x = 2; x < w; x += 16) {
+                    int a = (b.getPixel(x, y) >>> 24);
+                    if (a > max) {
+                        max = a;
+                    }
+                }
+            }
+            return max;
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
     private static void removeLayers() {
         detachLayer(sLeftLayer.get());
         detachLayer(sRightLayer.get());
@@ -1293,7 +1414,7 @@ public final class StatusBarContinuity {
             r.setImageBitmap(sRightBmp);
         }
         rideLayers(0f);
-        Port.log(TAG + ": resync layers split=" + sSplitX);
+        Port.log(TAG + ": resync layers split=" + sSplitX + " " + layerChainState());
     }
 
     // -------------------------------------------------------------- contents
@@ -1635,7 +1756,8 @@ public final class StatusBarContinuity {
         bar.postDelayed(sCollapseWatch, driftMs + 150L); // 停滞保险
         ImageView lg = sLeftLayer.get();
         Port.log(TAG + ": collapse drift to " + (-sOffset) + " layerA="
-                + (lg == null ? "none" : String.valueOf(lg.getAlpha())));
+                + (lg == null ? "none" : String.valueOf(lg.getAlpha()))
+                + " " + layerChainState());
     }
 
     /** 收起漂移结束: 停靠真实栏位置, 启动收尾轮询 (重截窗口 + 重现探针). */
@@ -1644,8 +1766,29 @@ public final class StatusBarContinuity {
             sState = WAITING_REAL;
             showLayers(); // fling 收尾遍历可能隐藏过位图层, 停靠即复显
             startSwapPoll(bar);
-            Port.log(TAG + ": parked at -" + sOffset);
+            Port.log(TAG + ": parked at -" + sOffset + " " + layerChainState());
         }
+    }
+
+    /** 停靠期面板重开: 停靠替身过时, 拆层复位交还 stock 原生重开 (无连贯). */
+    private static void abandonParked() {
+        View bar = sTarget.get();
+        if (bar != null) {
+            bar.removeCallbacks(sSwapPoll);
+            bar.removeCallbacks(sCollapseWatch);
+            // 复位为 stock 可接管态: 重开面板中栏应可见 (stock 展开动画自管),
+            // 非 hideBar 的 GONE (stock 原生重开不会解除我们写的 GONE).
+            bar.setVisibility(View.VISIBLE);
+            bar.setAlpha(1f);
+            bar.setTranslationY(0f);
+            restoreContentsAlpha(bar);
+            resetGroupShifts(bar);
+            removeLayers();
+            restoreClip();
+            restoreForcedVis();
+        }
+        sState = IDLE;
+        Port.log(TAG + ": parked abandoned (panel reopened)");
     }
 
     /** 点6: 收尾轮询启动 (sResyncDone 重置 → 隐私胶囊重截窗口开启). */
@@ -1723,10 +1866,12 @@ public final class StatusBarContinuity {
     private static void swapNow(View bar) {
         bar.removeCallbacks(sSwapPoll);
         bar.removeCallbacks(sCollapseWatch);
+        // 拆层前记录: 触发原因 + 真实栏重现状态 (判 "拆层后顶栏空缺" 用)
+        Port.log(TAG + ": swap shown=" + realBarShown() + " fading=" + realShowFading()
+                + " poll=" + sPollCount + " " + layerChainState());
         hideBar(bar);
         restoreForcedVis();
         sState = IDLE;
-        Port.log(TAG + ": swap");
     }
 
     // ------------------------------------------------------------- drop-back
@@ -1904,11 +2049,24 @@ public final class StatusBarContinuity {
     }
 
     private static void forceVisible(View host) {
-        if (host.getVisibility() != View.VISIBLE) {
-            host.setVisibility(View.VISIBLE);
+        if (host.getVisibility() == View.VISIBLE) {
+            return; // stock 本就显示: 无对抗, 不记录 (swap 不得把 stock 的 VISIBLE 打回隐藏)
         }
-        if (!sForcedVis.contains(host)) {
-            sForcedVis.add(host);
+        if (sForcedVis.contains(host)) {
+            host.setVisibility(View.VISIBLE); // 已记录: 只复显, 保留首次原值
+            return;
+        }
+        sForcedVisOrig.add(Integer.valueOf(host.getVisibility()));
+        sForcedVis.add(host);
+        host.setVisibility(View.VISIBLE);
+    }
+
+    /** stock 自身已复显宿主: 撤销对抗记录 (swap 不再回置, 防止覆盖 stock 的显示意图). */
+    private static void unforceVisible(View host) {
+        int idx = sForcedVis.indexOf(host);
+        if (idx >= 0) {
+            sForcedVis.remove(idx);
+            sForcedVisOrig.remove(idx);
         }
     }
 
@@ -1930,15 +2088,16 @@ public final class StatusBarContinuity {
         }
     }
 
-    /** 交还 stock: 收起态即 INVISIBLE (PanelBar L269 / applyVisibility L303). */
+    /** 交还 stock: 各宿主按被强制前的原值恢复 (PanelBar L269 / applyVisibility L303). */
     private static void restoreForcedVis() {
         for (int i = 0; i < sForcedVis.size(); i++) {
             View host = sForcedVis.get(i);
             if (host != null) {
-                host.setVisibility(View.INVISIBLE);
+                host.setVisibility(sForcedVisOrig.get(i).intValue());
             }
         }
         sForcedVis.clear();
+        sForcedVisOrig.clear();
     }
 
     // ---------------------------------------------------------------- helpers
