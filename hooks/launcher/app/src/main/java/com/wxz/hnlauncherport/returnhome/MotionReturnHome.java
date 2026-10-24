@@ -629,7 +629,7 @@ public final class MotionReturnHome {
                         // -14k..-21k (the v0.6 freeze class).
                         wfsSyn = true;
                         float capped = Math.max(-2000f, Math.min(2000f, speed));
-                        v0 = capped * (isX ? 1f : 1.5f);
+                        v0 = capped * (isX ? 1f : 1.7f);
                     } else {
                         // v0.4 semantics: the observed v0 was PINNED at -500 on
                         // fast flicks = the stock z=false +/-2000 speed cap *
