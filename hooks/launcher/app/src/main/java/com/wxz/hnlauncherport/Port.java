@@ -39,6 +39,7 @@ public final class Port {
     public static final String KEY_CAPSULE_ALWAYS = "hn_port_capsule_always"; // 1 = 灵动胶囊不自动收缩 (保持带背景胶囊视图)
     public static final String KEY_CC_SPRING_VEL = "hn_port_cc_spring_vel"; // 1 = 控制中心动效优化: 横滑松手 spring 初速度=手指速度 + 卡片放大锚点(上排4张角锚点, 下排3张顶边中点)
     public static final String KEY_CC_REAL_BLUR = "hn_port_cc_real_blur"; // 1 = 控制中心实时窗口模糊 (alpha 跟手半径)
+    public static final String KEY_CC_GLOBAL_SWIPE = "hn_port_cc_global_swipe"; // 1 = 通知/控制中心全屏范围横滑切换 (V17 样式, 滑条卡/通知行除外)
     public static final String KEY_KG_HIDE_STEPS = "hn_port_kg_hide_steps"; // 1 = 隐藏锁屏左下角步数
     public static final String KEY_KG_NO_TOOLBOX = "hn_port_kg_no_toolbox"; // 1 = 禁用锁屏底部上滑工具菜单
     public static final String KEY_KG_SKIP_FACE_ANIM = "hn_port_kg_skip_face_anim"; // 1 = 跳过密码界面面部解锁成功动画
@@ -47,6 +48,7 @@ public final class Port {
     public static final String KEY_NAV_HANDLE_HIDE = "hn_port_nav_handle_hide"; // 1 = 隐藏手势提示条, 保留底部抬升(导航栏高度不变)
     public static final String KEY_FF_GESTURE = "hn_port_ff_gesture"; // 1 = 悬浮窗手势优化: 底部上滑挂起(不进圆球) + 拖窗贴边最小化(替换横滑甩动判定)
     public static final String KEY_FF_ANIM = "hn_port_ff_anim"; // 1 = 悬浮窗动效优化: 最小化/挂起 spring(ζ=0.89, 初速度) + 全屏过渡 live 起播连贯
+    public static final String KEY_CC_STATUSBAR_CONTINUITY = "hn_port_cc_statusbar_continuity"; // 1 = 状态栏连贯: 进入控制中心/通知中心时状态栏随下拉跟手移动 (V17)
     public static final String KEY_ADV_UNLOCK_SCALE = "hn_port_adv_unlock_scale"; // float = 自定义解锁动画起始尺寸 (0.5-4), 未设置(NaN) = stock
     public static final String KEY_ADV_UNLOCK_ANCHOR = "hn_port_adv_unlock_anchor"; // float = 自定义解锁动画缩放锚点 (0-1 屏高比例), 默认 0.3
     public static final String KEY_ADV_UNLOCK_DELAY = "hn_port_adv_unlock_delay"; // float = 自定义解锁动画分组透明度延时 (0-60ms), 未设置(NaN) = stock(30ms)

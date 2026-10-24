@@ -31,6 +31,16 @@ public class HookEntry implements IXposedHookLoadPackage {
             } catch (Throwable t) {
                 Port.log("NavHandleHooks install failed", t);
             }
+            try {
+                com.wxz.hnlauncherport.systemui.CCGlobalSwipe.install(lpparam.classLoader);
+            } catch (Throwable t) {
+                Port.log("CCGlobalSwipe install failed", t);
+            }
+            try {
+                com.wxz.hnlauncherport.systemui.StatusBarContinuity.install(lpparam.classLoader);
+            } catch (Throwable t) {
+                Port.log("StatusBarContinuity install failed", t);
+            }
             return;
         }
         if (!LAUNCHER_PKG.equals(lpparam.packageName)) {

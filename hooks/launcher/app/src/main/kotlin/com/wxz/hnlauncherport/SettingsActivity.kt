@@ -395,6 +395,14 @@ private fun SettingsScreen() {
                             Port.KEY_CC_SPRING_VEL
                         ), true)
                         SettingsSwitchItem(ToggleRow(
+                            "状态栏连贯", "进入控制中心时，状态栏连贯移动",
+                            Port.KEY_CC_STATUSBAR_CONTINUITY
+                        ), true)
+                        SettingsSwitchItem(ToggleRow(
+                            "横滑切换区域优化", "通知/控制中心全屏范围横滑切换",
+                            Port.KEY_CC_GLOBAL_SWIPE
+                        ), true)
+                        SettingsSwitchItem(ToggleRow(
                             "高级模糊", "模糊半径跟手变化",
                             Port.KEY_CC_REAL_BLUR
                         ), true)

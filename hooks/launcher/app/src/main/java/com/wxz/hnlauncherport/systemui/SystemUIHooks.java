@@ -58,6 +58,8 @@ public final class SystemUIHooks {
     private static boolean sBlurLoopRunning = false;
     /** 当前半径基线 (同步到窗口 LayoutParams, relayout 时自动带上). */
     private static int sCurBlurRadius = 0;
+    /** 已对同一 view 写过 radius=0 的去重标记 (跳过重复 0 写入). */
+    private static WeakReference<View> sZeroBlurView = new WeakReference<View>(null);
 
     public static void install(ClassLoader cl) {
         Class<?> ctrl = XposedHelpers.findClass(CTRL_CLS, cl);
@@ -225,12 +227,15 @@ public final class SystemUIHooks {
         // surface 重建/relayout (子面板, 长按, 通知, 上滑接管) 会重置 transaction
         // 写入的模糊半径 → 逐帧重放只能晚一帧恢复. 写进 LP 后任何 relayout
         // 自动携带模糊, 重建即带半径, 不再有 1 帧空窗.
+        // [fix2] 本机 LayoutParams 无 backgroundBlurRadius 字段 (NoSuchFieldError
+        // 每次 relayout 刷错), 运行时探测一次, 缺失则跳过 LP 同步.
+        final boolean[] hasBlurLpField = new boolean[]{hasBlurRadiusField()};
         try {
             XposedBridge.hookAllMethods(shadeCtrlCls, "applyWindowLayoutParams",
                     new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    if (!Port.on(Port.KEY_CC_REAL_BLUR)) {
+                    if (!Port.on(Port.KEY_CC_REAL_BLUR) || !hasBlurLpField[0]) {
                         return;
                     }
                     Object ctrl = param.thisObject;
@@ -265,18 +270,51 @@ public final class SystemUIHooks {
         } catch (Throwable t) {
             Port.log("SystemUIHooks: fraction probe failed", t);
         }
-        // [probe] stock 侧任何窗口模糊写入 (含 0)
+        // [fix] applyWindowBlur 去重: stock 每次调用都 Log.e + 新开事务写
+        // setBackgroundBlurRadius, REAL_BLUR 逐帧重放 radius=0 时产生海量
+        // spam 日志和无效 binder 事务. 半径归零 (f<=0.5) 且同一 view 上次
+        // 已写过 0 → 整次调用跳过 (日志+事务一起省); 非零写入清标记, 之后
+        // 的归零重新走全路径. surface 重建默认半径即 0, 跳过重复 0 无副作用.
         try {
             XposedHelpers.findAndHookMethod(shadeCtrlCls, "applyWindowBlur",
                     View.class, float.class, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    // Port.log("blurProbe awb t=" + android.os.SystemClock.uptimeMillis()
-                    //         + " r=" + param.args[1]);
+                    float f = (Float) param.args[1];
+                    if (f <= 0.5f) {
+                        View v = (View) param.args[0];
+                        if (v == sZeroBlurView.get()) {
+                            param.setResult(null);
+                            return;
+                        }
+                        sZeroBlurView = new WeakReference<View>(v);
+                    } else {
+                        sZeroBlurView = new WeakReference<View>(null);
+                    }
                 }
             });
         } catch (Throwable t) {
-            Port.log("SystemUIHooks: awb probe failed", t);
+            Port.log("SystemUIHooks: awb dedupe failed", t);
+        }
+        // [fix] 静默 stock 模糊调试日志: updateWindowBlur ("setAnimationParam")
+        // 与 applyWindowBlur 首次写入 ("applyWindowBlur") 的每帧 Log.e.
+        try {
+            XposedHelpers.findAndHookMethod(android.util.Log.class, "e",
+                    String.class, String.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    if (!"NotificationShadeWindowController".equals(param.args[0])) {
+                        return;
+                    }
+                    String msg = (String) param.args[1];
+                    if (msg != null && (msg.startsWith("applyWindowBlur")
+                            || msg.startsWith("setAnimationParam"))) {
+                        param.setResult(0);
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            Port.log("SystemUIHooks: blur log silence failed", t);
         }
         // [probe] stock 退出/进入模糊动画启动
         try {
@@ -610,45 +648,46 @@ public final class SystemUIHooks {
                     }
                 });
 
-        // [DEBUG] 临时: 记录 CC 视图被缩到 <1 的调用源, 定位显示动画初值来源
-        final Class<?> ccScrollCls = XposedHelpers.findClass(
-                "com.android.systemui.controllercenter.HnControlCenterScrollView", cl);
-        final Class<?> ccHeaderCls = XposedHelpers.findClass(
-                "com.android.systemui.controllercenter.HnControlCenterHeader", cl);
-        XC_MethodHook scaleProbe = new XC_MethodHook() {
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                float v = (Float) param.args[0];
-                Object thiz = param.thisObject;
-                if (v >= 0.995f && v <= 1.005f) {
-                    return;
-                }
-                if (!ccScrollCls.isInstance(thiz) && !ccHeaderCls.isInstance(thiz)) {
-                    return;
-                }
-                StackTraceElement[] st = new Throwable().getStackTrace();
-                StringBuilder sb = new StringBuilder("scaleProbe " + v + " on "
-                        + thiz.getClass().getSimpleName() + " <- ");
-                int n = 0;
-                for (StackTraceElement e : st) {
-                    String cn = e.getClassName();
-                    if (cn.startsWith("com.wxz.") || cn.startsWith("de.robv")
-                            || cn.startsWith("android.animation")
-                            || cn.equals("java.lang.Thread")) {
-                        continue;
-                    }
-                    sb.append(cn, cn.lastIndexOf('.') + 1, cn.length())
-                      .append('.').append(e.getMethodName()).append(':')
-                      .append(e.getLineNumber()).append(' ');
-                    if (++n >= 6) {
-                        break;
-                    }
-                }
-                Port.log(sb.toString());
-            }
-        };
-        XposedHelpers.findAndHookMethod(View.class, "setScaleX", float.class, scaleProbe);
-        XposedHelpers.findAndHookMethod(View.class, "setScaleY", float.class, scaleProbe);
+        // [DEBUG 已停用] 记录 CC 视图被缩到 <1 的调用源 (全局 hook
+        // View.setScaleX/Y, 每次缩放走一遍栈回溯, 仅排查期使用)
+        // final Class<?> ccScrollCls = XposedHelpers.findClass(
+        //         "com.android.systemui.controllercenter.HnControlCenterScrollView", cl);
+        // final Class<?> ccHeaderCls = XposedHelpers.findClass(
+        //         "com.android.systemui.controllercenter.HnControlCenterHeader", cl);
+        // XC_MethodHook scaleProbe = new XC_MethodHook() {
+        //     @Override
+        //     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+        //         float v = (Float) param.args[0];
+        //         Object thiz = param.thisObject;
+        //         if (v >= 0.995f && v <= 1.005f) {
+        //             return;
+        //         }
+        //         if (!ccScrollCls.isInstance(thiz) && !ccHeaderCls.isInstance(thiz)) {
+        //             return;
+        //         }
+        //         StackTraceElement[] st = new Throwable().getStackTrace();
+        //         StringBuilder sb = new StringBuilder("scaleProbe " + v + " on "
+        //                 + thiz.getClass().getSimpleName() + " <- ");
+        //         int n = 0;
+        //         for (StackTraceElement e : st) {
+        //             String cn = e.getClassName();
+        //             if (cn.startsWith("com.wxz.") || cn.startsWith("de.robv")
+        //                     || cn.startsWith("android.animation")
+        //                     || cn.equals("java.lang.Thread")) {
+        //                 continue;
+        //             }
+        //             sb.append(cn, cn.lastIndexOf('.') + 1, cn.length())
+        //               .append('.').append(e.getMethodName()).append(':')
+        //               .append(e.getLineNumber()).append(' ');
+        //             if (++n >= 6) {
+        //                 break;
+        //             }
+        //         }
+        //         Port.log(sb.toString());
+        //     }
+        // };
+        // XposedHelpers.findAndHookMethod(View.class, "setScaleX", float.class, scaleProbe);
+        // XposedHelpers.findAndHookMethod(View.class, "setScaleY", float.class, scaleProbe);
 
         // (7) 悬浮窗手势/动效优化 (独立类, 各自 try-catch)
         FreeformFx.install(cl);
@@ -674,6 +713,17 @@ public final class SystemUIHooks {
             }
         } catch (Throwable t) {
             Port.log("SystemUIHooks: rewriteScaleEnd failed", t);
+        }
+    }
+
+    /** 运行时探测 WindowManager.LayoutParams.backgroundBlurRadius 是否存在. */
+    private static boolean hasBlurRadiusField() {
+        try {
+            WindowManager.LayoutParams.class.getField("backgroundBlurRadius");
+            return true;
+        } catch (Throwable t) {
+            Port.log("SystemUIHooks: no backgroundBlurRadius field, skip LP sync");
+            return false;
         }
     }
 
