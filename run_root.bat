@@ -3,6 +3,11 @@ chcp 65001 >nul
 title GhostLock-HonorFne 一键临时 root
 cd /d "%~dp0"
 
+rem 闪退追踪: 每阶段一行痕迹写入 run_root.log。窗口意外关闭时,
+rem 该文件最后一条记录 = 闪退断点, 把文件发给开发者即可定位。
+set "LOG=%~dp0run_root.log"
+> "%LOG%" echo === run_root.bat start %date% %time% ===
+
 echo ==================================================
 echo    GhostLock-HonorFne  一键临时 root（Windows）
 echo    目标设备: 荣耀70 FNE-AN00（Bootloader 锁定）
@@ -16,6 +21,7 @@ echo   [2] 撤销部署（清理设备端传输文件与模块中转；不卸载
 set "MODE=1"
 set /p "MODE=输入 1 或 2 后回车: "
 if "%MODE%"=="2" goto :undo
+>> "%LOG%" echo mode select: %MODE%
 goto :deploy
 
 :undo
@@ -45,6 +51,7 @@ if not defined BASH (
 )
 if not defined BASH goto :no_bash
 echo       OK: adb 与 Git Bash 均已就绪
+>> "%LOG%" echo [1/5] deps ok
 echo.
 
 rem ---------- 2/5 连接设备 ----------
@@ -55,8 +62,9 @@ if errorlevel 1 (
     echo       等待设备接入（请插好 USB 并允许 USB 调试授权）...
     adb wait-for-device
 )
-echo       已连接:
+echo      已连接:
 adb devices
+>> "%LOG%" echo [2/5] device connected
 echo.
 
 rem ---------- 3/5 root 状态检查 ----------
@@ -82,6 +90,7 @@ if %KSU_TRIES% LSS 2 (
 :ksu_done
 if "%KSU_LOADED%"=="1" (
     echo       KernelSU 已在运行，无需再次提权。
+    >> "%LOG%" echo [3/5] ksu already loaded - top up install/activate
     call :ensure_module
     rem 上次运行可能超时误判"未落地"(模块已加载但 su 未就绪): 补齐安装/激活,
     rem 重跑即修复
@@ -93,6 +102,7 @@ if "%KSU_LOADED%"=="1" (
     exit /b 0
 )
 echo       KernelSU 未加载，继续。
+>> "%LOG%" echo [3/5] ksu not loaded
 echo.
 
 rem ---------- 4/5 部署（无条件覆盖） ----------
@@ -103,12 +113,16 @@ if not exist "root\exploit\ghostlock" (
     echo        本仓库应自带预编译产物；若你通过 git clone 获取且缺失，
     echo        请先更新到最新版本；或参考 README "重新构建" 一节自备
     echo        Android NDK r27c 后执行:  cd root\exploit ^&^& ANDROID_NDK_HOME=.. make
+    >> "%LOG%" echo [ERR] ghostlock missing
+    timeout /t 30 /nobreak >nul
     pause
     exit /b 1
 )
 for %%F in (chain_hook.sh kernelsu.ko ksud magiskpolicy ksu_rules load_ko kmsg_dumper fne_syms.txt) do (
     if not exist "root\ksu-late-load\%%F" (
         echo [错误] 未找到 root\ksu-late-load\%%F
+        >> "%LOG%" echo [ERR] missing root\ksu-late-load\%%F
+        timeout /t 30 /nobreak >nul
         pause
         exit /b 1
     )
@@ -122,7 +136,8 @@ for %%F in (chain_hook.sh kernelsu.ko ksud magiskpolicy ksu_rules load_ko kmsg_d
     adb push "root/ksu-late-load/%%F" /data/local/tmp/ksu_fne/ || goto :push_fail
 )
 adb shell "chmod 755 /data/local/tmp/ksu_fne/chain_hook.sh /data/local/tmp/ksu_fne/magiskpolicy /data/local/tmp/ksu_fne/ksud /data/local/tmp/ksu_fne/load_ko /data/local/tmp/ksu_fne/kmsg_dumper"
-echo       部署完成。
+echo      部署完成。
+>> "%LOG%" echo [4/5] deploy done
 echo.
 
 rem netfix_packet 模块体积小、迭代快：每次都重新传输，
@@ -141,6 +156,7 @@ echo       * 全自动运行，含多次设备重启，可能耗时较长
 echo       * 请勿关闭本窗口；勿同时运行其他 grind
 echo       * 成功后脚本自动停止
 echo.
+>> "%LOG%" echo [5/5] grind start %date% %time% - 窗口若在 grind 期间消失=被杀, 非脚本退出
 "%BASH%" "root/host-scripts/run_forever.sh"
 echo.
 
@@ -152,6 +168,7 @@ if not errorlevel 1 goto :ksu_ok
 goto :ksu_fail
 
 :ksu_fail
+>> "%LOG%" echo [5/5] grind failed - retryable
 call :ensure_module
 echo ==================================================
 echo    [未成功] 本次 grind 未落地，可重新运行再试。
@@ -159,6 +176,7 @@ echo ==================================================
 goto :done_root
 
 :ksu_ok
+>> "%LOG%" echo [5/5] ksu up - installing managers/zygisk
 call :ensure_module
 echo ==================================================
 echo    [成功] KernelSU 已加载，临时 root 就绪！
@@ -178,17 +196,26 @@ exit /b 0
 :no_adb
 echo [错误] 未找到 adb。
 echo        请安装 Android platform-tools 并将 adb 所在目录加入 PATH。
+echo        下载: https://developer.android.com/tools/releases/platform-tools
+echo        (解压后把目录加入 PATH, 或把 4 个 exe 放进本目录也可)
+>> "%LOG%" echo [ERR] no_adb - install platform-tools and add to PATH
+rem 30s 强制停留: 连按回车的缓冲按键会瞬间吃掉 pause 造成"闪退"假象
+timeout /t 30 /nobreak >nul
 pause
 exit /b 1
 
 :no_bash
 echo [错误] 未找到 Git Bash。
 echo        请安装 Git for Windows（https://git-scm.com/download/win）。
+>> "%LOG%" echo [ERR] no_bash - install Git for Windows
+timeout /t 30 /nobreak >nul
 pause
 exit /b 1
 
 :push_fail
 echo [错误] 文件推送失败。请检查连接与 USB 调试授权后重试。
+>> "%LOG%" echo [ERR] push_fail - check cable/USB-debug authorization
+timeout /t 30 /nobreak >nul
 pause
 exit /b 1
 

@@ -2,7 +2,10 @@
 * text=auto
 *.sh text eol=lf
 *.command text eol=lf
-*.bat text eol=crlf
+# .bat 必须以 CRLF 存进 blob 本身: git archive(ZIP 下载)/raw 下载不做 eol 转换,
+# LF 的 .bat 在 cmd 下 goto :label 会找不到标签而直接终止批处理(双击=闪退)。
+# -text = 不做任何规范化, 工作区 CRLF 原样入库, clone/ZIP/raw 全部拿到 CRLF。
+*.bat -text
 
 # Binaries: never touch
 *.ko binary
