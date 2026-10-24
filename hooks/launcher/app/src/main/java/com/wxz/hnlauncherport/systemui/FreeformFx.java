@@ -499,11 +499,33 @@ public final class FreeformFx {
                 || maxBounds == null || maxBounds.isEmpty()) {
             return;
         }
+        // 视觉窗口 = 任务边界 × currentScale (锚定左上): HnFreeform 把边界
+        // 放大 1/scale 再用 surface matrix scale 缩回 (coordinator
+        // rect.scale(getCurrentScale())+offsetTo(left,top); 横屏内容/
+        // 宽小窗 scale<1). 直接用未缩放边界会高估右侧越出量与阈值 ->
+        // 宽小窗轻碰即最小化 / 横屏小窗范围错位.
+        float scale = 1f;
+        if (ffCtrl != null) {
+            try {
+                Object fti = XposedHelpers.callMethod(ffCtrl, "getFreeformTaskInfo", taskId);
+                if (fti != null) {
+                    float cs = (Float) XposedHelpers.callMethod(fti, "getCurrentScale");
+                    if (cs > 0f && cs < 1.5f) {
+                        scale = cs;
+                    }
+                }
+            } catch (Throwable t) {
+                Port.log("FreeformFx: currentScale read failed", t);
+            }
+        }
+        Rect visual = new Rect(taskBounds.left, taskBounds.top,
+                taskBounds.left + (int) (taskBounds.width() * scale),
+                taskBounds.top + (int) (taskBounds.height() * scale));
         float dx = ev.getRawX() - track[0];
-        float liveLeft = taskBounds.left + dx;
-        float liveRight = taskBounds.right + dx;
-        // 越出屏幕的部分 >= 窗口宽 0.3 -> 贴边
-        float offThreshold = taskBounds.width() * 0.3f;
+        float liveLeft = visual.left + dx;
+        float liveRight = visual.right + dx;
+        // 越出屏幕的部分 >= 视觉宽 0.3 -> 贴边
+        float offThreshold = visual.width() * 0.3f;
         int dir = maxBounds.left - liveLeft >= offThreshold ? 0
                 : liveRight - maxBounds.right >= offThreshold ? 1 : -1;
         if (dir < 0) {
