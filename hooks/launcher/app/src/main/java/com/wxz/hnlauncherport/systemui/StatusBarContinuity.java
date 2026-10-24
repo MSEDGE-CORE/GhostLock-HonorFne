@@ -202,7 +202,9 @@ public final class StatusBarContinuity {
         public void run() {
             View bar = sTarget.get();
             if (bar == null || !sSpringRunning
-                    || (sState != FOLLOWING && sState != SETTLING)) {
+                    || (sState != FOLLOWING && sState != SETTLING
+                    && !(sState == COLLAPSING && sColFollow))) {
+                // COLLAPSING 收起跟手期 spring 照跑 (场景A 跟手映射依赖)
                 sSpringRunning = false;
                 return;
             }
@@ -238,6 +240,33 @@ public final class StatusBarContinuity {
             }
         }
     };
+    /** 场景A (带内下-上, 手指未抬) 收起跟手: 复用下拉映射 (锚定 mInitialY, 不新建 delta). */
+    private static volatile boolean sColFollow = false;
+    /** 跟手停滞保险: 手指按住不动/事件断流/已抬超时, 续接收尾 (防冻结重叠). */
+    private static final long COL_FOLLOW_STALL_MS = 400L;
+    private static final Runnable sColFollowWatch = new Runnable() {
+        @Override
+        public void run() {
+            View bar = sTarget.get();
+            if (bar != null && sState == COLLAPSING && sColFollow) {
+                // Port.log(TAG + ": collapse follow stalled");
+                startCollapseFinishAnim(bar);
+            }
+        }
+    };
+    /** 跟手到标准位 (p≤0, 手指回到下拉初始Y): spring 归零后停靠收尾. */
+    private static final Runnable sColBaseWatch = new Runnable() {
+        @Override
+        public void run() {
+            View bar = sTarget.get();
+            if (bar != null && sState == COLLAPSING) {
+                sColFollow = false;
+                sSpringRunning = false; // 停 spring, 停靠轮询统一钉标准位
+                // Port.log(TAG + ": collapse follow reached base");
+                finishCollapse(bar);
+            }
+        }
+    };
     private static final Runnable sSwapPoll = new Runnable() {
         @Override
         public void run() {
@@ -264,11 +293,9 @@ public final class StatusBarContinuity {
                 bar.postDelayed(this, POLL_MS);
                 return;
             }
-            // 空缺根除: 上限到点但真实栏淡入仍在进行 → 继续等到 ≥0.99 再切;
-            // 无重现迹象 (真栏确实隐藏) 或 4 倍上限 → 硬切.
-            boolean fading = realShowFading();
-            if (sPollCount >= POLL_MAX * 4 || (sPollCount >= POLL_MAX && !fading)
-                    || realBarShown()) {
+            // 空缺根除: 停靠层是完美替身, 真实栏未重现前不拆 (早拆=顶栏空缺闪).
+            // 只等两个终点: 真实栏 ≥0.99 接替, 或 4 倍上限 (真栏确实不归的安全阀).
+            if (sPollCount >= POLL_MAX * 4 || realBarShown()) {
                 if (!sResyncDone) { // 探针通过仍未重截 (极端): 换前同帧吸附
                     sResyncDone = true;
                     resyncLayers(bar);
@@ -302,6 +329,26 @@ public final class StatusBarContinuity {
                             onMove(param);
                         } catch (Throwable t) {
                             Port.log(TAG + ": onMove failed", t);
+                        }
+                    }
+                });
+
+        // 手指抬起 (onEndMotion): 场景A 收起跟手续接收尾 (无回弹, collapse 已提交)
+        XposedHelpers.findAndHookMethod(panelImpl, "onEndMotion", float.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        try {
+                            // Port.log(TAG + ": onEndMotion y=" + param.args[0]);
+                            if (sColFollow && sState == COLLAPSING) {
+                                View bar = sTarget.get();
+                                if (bar != null) {
+                                    // Port.log(TAG + ": collapse follow finger up");
+                                    startCollapseFinishAnim(bar);
+                                }
+                            }
+                        } catch (Throwable t) {
+                            Port.log(TAG + ": onEndMotion follow failed", t);
                         }
                     }
                 });
@@ -401,9 +448,11 @@ public final class StatusBarContinuity {
                 View bar = sTarget.get();
                 if (bar != null) {
                     bar.removeCallbacks(sSwapPoll);
+                    bar.removeCallbacks(sColFollowWatch);
                     hideBar(bar);
                     restoreForcedVis();
                 }
+                sColFollow = false;
                 sState = IDLE;
             }
             return;
@@ -419,6 +468,20 @@ public final class StatusBarContinuity {
                 return;
             }
             follow(param.thisObject, bar, y);
+            return;
+        }
+        // 场景A 收起跟手: 手指未抬 (mIsPanelChangedWhenTracking), 复制层
+        // 位置按手指Y 1:1 映射回标准位 (仿 demo Y<0 钳制), 手指停层停
+        if (sState == COLLAPSING && sColFollow) {
+            View bar = sTarget.get();
+            if (bar == null) {
+                sColFollow = false;
+                sState = IDLE;
+                return;
+            }
+            applyCollapseFollow(param.thisObject, bar, y);
+            bar.removeCallbacks(sColFollowWatch);
+            bar.postDelayed(sColFollowWatch, COL_FOLLOW_STALL_MS);
             return;
         }
         // COLLAPSING 不可重 engage: 带内回穿收起是提交性 fling 关闭
@@ -551,7 +614,9 @@ public final class StatusBarContinuity {
     private static void applyProgress(View bar, float p) {
         sProgress = p;
         boolean full = p >= 0.999f;
-        if (full && !sRevealed) {
+        if (full && !sRevealed && sState != COLLAPSING) {
+            // COLLAPSING 收起跟手期抑制 re-reveal: p 回到 1 也不复显真栏
+            // (collapse 已提交, 复制层须独占)
             sRevealed = true;
             View pc = getPanelContents(bar);
             applyTint(pc, sPanelTint); // contents 不可见时切换 → 无闪
@@ -1623,8 +1688,20 @@ public final class StatusBarContinuity {
      */
     private static void onSettle(final View bar, XC_MethodHook.MethodHookParam param) {
         if (sState != FOLLOWING && sState != SETTLING && sState != DROPPING
-                && sState != WAITING_REAL) {
+                && sState != WAITING_REAL && sState != COLLAPSING) {
             return; // 未跟手 (锁屏 shade / 补偿路径), stock 淡入
+        }
+        // 收起中 stock 反向重展开 (松手带反向速度 fling 重开 / 程序化展开):
+        // 撤收起跟手回调与漂移动画, 复制层原地转为展开跟手 (连续反转, 不拆层)
+        if (sState == COLLAPSING) {
+            sColFollow = false;
+            sState = SETTLING; // 先切, 防 cancel 监听 finishCollapse 误停靠
+            bar.removeCallbacks(sColFollowWatch);
+            bar.removeCallbacks(sColBaseWatch);
+            bar.removeCallbacks(sCollapseWatch);
+            cancelPhaseAnim();
+            sSpringRunning = false;
+            // Port.log(TAG + ": settle during collapse -> reverse to expand follow");
         }
         sState = SETTLING;
         cancelPhaseAnim();
@@ -1670,6 +1747,7 @@ public final class StatusBarContinuity {
                 && sGeomW != bar.getResources().getDisplayMetrics().widthPixels) {
             cancelPhaseAnim();
             bar.removeCallbacks(sSwapPoll);
+            bar.removeCallbacks(sColFollowWatch);
             resetGroupShifts(bar);
             restoreContentsAlpha(bar);
             removeLayers();
@@ -1677,6 +1755,7 @@ public final class StatusBarContinuity {
             restoreForcedVis();
             bar.setAlpha(1f);
             bar.setTranslationY(0f);
+            sColFollow = false;
             sState = IDLE;
             Port.log(TAG + ": collapse degrade (orientation changed)");
             return; // 不 setResult → stock 自建动画原样跑
@@ -1695,6 +1774,50 @@ public final class StatusBarContinuity {
             bar.setAlpha(0f);
         } else {
             applyTint(pc, sRealTint); // 降级: 无位图, 硬切回真实色 (二轮行为)
+        }
+        // 场景A 重复收起回调 (跟手已布防): 不扰动, 返回占位
+        if (sColFollow && sState == COLLAPSING) {
+            AnimatorSet dummy = new AnimatorSet();
+            dummy.setDuration(300L);
+            param.setResult(dummy);
+            return;
+        }
+        // 场景识别: mIsPanelChangedWhenTracking=真 → 带内下-上 (手指未抬,
+        // MOVE 持续) → 收起跟手; 假 → fling 收起 (场景B, 手指已抬) → 原固定漂移
+        boolean fingerHeld = false;
+        try {
+            fingerHeld = XposedHelpers.getBooleanField(param.thisObject,
+                    "mIsPanelChangedWhenTracking");
+        } catch (Throwable t) {
+            Port.log(TAG + ": follow detect failed", t);
+        }
+        ImageView fl = sLeftLayer.get();
+        ImageView fr = sRightLayer.get();
+        if (fingerHeld && sBmpOk && fl != null && fr != null) {
+            // 跟手期不用固定漂移保险 (sCollapseWatch) — 改由 MOVE 顺延的
+            // sColFollowWatch 兜底, 防慢拖 >1.8s 被误判停滞提前停靠错位
+            sColFollow = true;
+            bar.removeCallbacks(sCollapseWatch);
+            bar.removeCallbacks(sColBaseWatch);
+            bar.removeCallbacks(sColFollowWatch);
+            bar.postDelayed(sColFollowWatch, COL_FOLLOW_STALL_MS);
+            // reveal 态 (进度100 真栏已接替, 层 alpha=0) → 收起跟手须先复层:
+            // 与 re-copy 同式交接 (contents 藏/层显), 否则进 collapse 层不可见
+            if (sRevealed) {
+                sRevealed = false;
+                bar.setAlpha(1f);
+                hidePanelContents(bar);
+                setLayersAlpha(1f);
+                // Port.log(TAG + ": collapse follow takeover (layers re-shown)");
+            }
+            AnimatorSet dummy = new AnimatorSet();
+            dummy.setDuration(300L);
+            param.setResult(dummy);
+            // Port.log(TAG + ": collapse follow armed (anchored mInitialY) "
+            //         + layerChainState());
+            // 用触发 MOVE 的手指位置立即起跟 (快甩不等下一拍)
+            applyCollapseFollow(param.thisObject, bar, sLastMoveY);
+            return;
         }
         // 收起漂移固定时长 0.5s (用户定), spring 曲线 (dur+k 全局可调)
         long driftMs = COLLAPSE_DRIFT_MS;
@@ -1770,12 +1893,98 @@ public final class StatusBarContinuity {
         }
     }
 
+    /**
+     * 场景A 收起跟手: 复用下拉同一手指映射 (锚定 mInitialY, 不新建 delta),
+     * p = (y - mInitialY)/mDistanceForExpand 钳制 [0,1], springTo 驱动
+     * applyProgress (re-copy 回落/复层与下拉完全连续).
+     * p≤0 (手指回到下拉初始Y/之上, Y<0 钳制): spring 归零后停靠收尾.
+     */
+    private static void applyCollapseFollow(Object ctrl, View bar, float y) {
+        ImageView l = sLeftLayer.get();
+        ImageView r = sRightLayer.get();
+        if (l == null || r == null) {
+            startCollapseFinishAnim(bar);
+            return;
+        }
+        float initialY = XposedHelpers.getFloatField(ctrl, "mInitialY");
+        float pull = y - initialY;
+        float threshold = XposedHelpers.getIntField(ctrl, "mDistanceForExpand");
+        float p = (threshold > 0f && pull > 0f) ? Math.min(pull / threshold, 1f) : 0f;
+        if (p <= 0f) {
+            sColFollow = false;
+            bar.removeCallbacks(sColFollowWatch);
+            bar.removeCallbacks(sColBaseWatch);
+            bar.postDelayed(sColBaseWatch, 200L); // spring 归零时长后停靠
+            springTo(bar, 0f);
+            // Port.log(TAG + ": collapse follow hand at initialY, spring to base");
+            return;
+        }
+        springTo(bar, p);
+    }
+
+    /**
+     * 跟手终止 (松手/停滞/层缺失): 无回弹 — collapse 已提交,
+     * spring/动画续接到标准位后停靠收尾.
+     */
+    private static void startCollapseFinishAnim(final View bar) {
+        if (!sColFollow || sState != COLLAPSING) {
+            return;
+        }
+        sColFollow = false;
+        bar.removeCallbacks(sColFollowWatch);
+        bar.removeCallbacks(sColBaseWatch);
+        sSpringRunning = false; // 停 spring, 交由显式动画接管
+        ImageView l = sLeftLayer.get();
+        ImageView r = sRightLayer.get();
+        float travel = Math.max(1f, sOffset);
+        float remain = l == null ? 0f : Math.max(0f, l.getTranslationY() - sBaseTy);
+        long ms = (long) Math.max(120f, 300f * (remain / travel));
+        TimeInterpolator ip = springIp(ms, SPRING_K);
+        ArrayList<Animator> anims = new ArrayList<Animator>();
+        if (l != null) {
+            anims.add(objAnim(l, "translationX", l.getTranslationX(), sBaseLeftTx, ms, ip));
+            anims.add(objAnim(l, "translationY", l.getTranslationY(), sBaseTy, ms, ip));
+        }
+        if (r != null) {
+            anims.add(objAnim(r, "translationX", r.getTranslationX(), sBaseRightTx, ms, ip));
+            anims.add(objAnim(r, "translationY", r.getTranslationY(), sBaseTy, ms, ip));
+        }
+        AnimatorSet set = new AnimatorSet();
+        set.playTogether(anims);
+        set.addListener(new Animator.AnimatorListener() {
+            @Override
+            public void onAnimationStart(Animator a) {
+            }
+
+            @Override
+            public void onAnimationEnd(Animator a) {
+                finishCollapse(bar);
+            }
+
+            @Override
+            public void onAnimationCancel(Animator a) {
+                finishCollapse(bar);
+            }
+
+            @Override
+            public void onAnimationRepeat(Animator a) {
+            }
+        });
+        sPhaseAnim = set;
+        set.start();
+        bar.removeCallbacks(sCollapseWatch);
+        bar.postDelayed(sCollapseWatch, ms + 150L);
+        // Port.log(TAG + ": collapse follow finish anim " + ms + "ms remain=" + remain);
+    }
+
     /** 停靠期面板重开: 停靠替身过时, 拆层复位交还 stock 原生重开 (无连贯). */
     private static void abandonParked() {
         View bar = sTarget.get();
         if (bar != null) {
             bar.removeCallbacks(sSwapPoll);
             bar.removeCallbacks(sCollapseWatch);
+            bar.removeCallbacks(sColFollowWatch);
+            bar.removeCallbacks(sColBaseWatch);
             // 复位为 stock 可接管态: 重开面板中栏应可见 (stock 展开动画自管),
             // 非 hideBar 的 GONE (stock 原生重开不会解除我们写的 GONE).
             bar.setVisibility(View.VISIBLE);
@@ -1787,6 +1996,7 @@ public final class StatusBarContinuity {
             restoreClip();
             restoreForcedVis();
         }
+        sColFollow = false;
         sState = IDLE;
         Port.log(TAG + ": parked abandoned (panel reopened)");
     }
