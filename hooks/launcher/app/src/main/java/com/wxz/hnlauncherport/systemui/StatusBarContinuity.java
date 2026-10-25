@@ -22,6 +22,7 @@ import com.wxz.hnlauncherport.Port;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.List;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -118,6 +119,8 @@ public final class StatusBarContinuity {
     private static WeakReference<View> sTarget = new WeakReference<View>(null);
     /** 当前相位动画 (settle 占位/collapse/drop), 换相/engage 时取消. */
     private static Animator sPhaseAnim;
+    /** settle 松手续接动画: 新手指按下时取消 (防与 spring 双写 applyProgress). */
+    private static Animator sSettleCont;
     private static Field sTouchAreaField;
     private static Class<?> sNotchUtilsCls;
     private static Class<?> sPhoneSbUtilsCls;
@@ -179,6 +182,13 @@ public final class StatusBarContinuity {
     private static volatile float sProgress;
     /** 进度≥0.999 时真实 CC 栏已接替 (复制层瞬隐); 回落再切回复制栏. */
     private static boolean sRevealed;
+    /** 彩色胶囊模式 (横屏, 胶囊嵌真栏时钟右边): 真栏显隐走 pull-anim 路线
+     *  (startDelay/后半段回淡), 与复制层固定时序错位. */
+    private static boolean sColoredCapsule;
+    /** 彩色胶囊: 基点 (p=0) 复制层已隐藏 (CC 层维持隐藏态); p>0 复层接管. */
+    private static boolean sBaseHandover;
+    /** 本轮停靠轮询上限 (普通=POLL_MAX*4 安全阀; 彩色胶囊场景B=0 即时交换). */
+    private static int sMaxPoll = POLL_MAX * 4;
     /** 手指速率 (px/ms, 平滑) 与上次 MOVE 采样: 松手续接动画时长依据. */
     private static volatile float sVelY;
     private static float sLastMoveY;
@@ -249,7 +259,7 @@ public final class StatusBarContinuity {
         public void run() {
             View bar = sTarget.get();
             if (bar != null && sState == COLLAPSING && sColFollow) {
-                // Port.log(TAG + ": collapse follow stalled");
+                Port.log(TAG + ": collapse follow stalled");
                 startCollapseFinishAnim(bar);
             }
         }
@@ -262,11 +272,75 @@ public final class StatusBarContinuity {
             if (bar != null && sState == COLLAPSING) {
                 sColFollow = false;
                 sSpringRunning = false; // 停 spring, 停靠轮询统一钉标准位
-                // Port.log(TAG + ": collapse follow reached base");
+                // spring 未必收敛 (固定 200ms 早于长行程收敛): 停靠前强制钉
+                // 基点 — 否则层停在半空 (ty 40-70) 悬在真栏区域 = 同位叠透
+                if (sBmpOk) {
+                    measureBase(bar);
+                    rideLayers(0f);
+                    // 彩色胶囊: 到基点只隐藏复制层 — CC 层维持隐藏态不留替身
+                    if (sColoredCapsule && !sBaseHandover) {
+                        sBaseHandover = true;
+                        setLayersAlpha(0f);
+                        Port.log(TAG + ": base layer hidden on arrival (colored)");
+                    }
+                }
+                Port.log(TAG + ": collapse follow reached base");
                 finishCollapse(bar);
             }
         }
     };
+
+    /** 彩色胶囊探测: 模式 (DynamicUtils.isColoredCapsule, 源码横屏恒真)
+     *  且实际有胶囊装载 (面板控制器 mHnStatusBarPullAnim.isHasCapsuleSet —
+     *  横屏无胶囊时模式仍真, 只看模式会误入彩色分支). */
+    private static boolean detectColoredCapsule(Object ctrl, View bar) {
+        boolean mode;
+        try {
+            Class<?> clz = XposedHelpers.findClass(
+                    "com.hihonor.systemui.dynamicserver.utils.DynamicUtils",
+                    bar.getContext().getClassLoader());
+            Object r = XposedHelpers.callStaticMethod(clz, "isColoredCapsule",
+                    bar.getContext());
+            mode = r instanceof Boolean && ((Boolean) r).booleanValue();
+        } catch (Throwable t) {
+            mode = bar.getResources().getConfiguration().orientation == 2;
+        }
+        if (!mode) {
+            return false;
+        }
+        try {
+            Object pullAnim = XposedHelpers.getObjectField(ctrl, "mHnStatusBarPullAnim");
+            if (pullAnim != null) {
+                Object has = XposedHelpers.callMethod(pullAnim, "isHasCapsuleSet");
+                if (has instanceof Boolean) {
+                    return ((Boolean) has).booleanValue();
+                }
+            }
+        } catch (Throwable t) {
+            // 旧版 (SystemUI 14) 无 pull-anim 链 → 走实际装载链
+        }
+        // 实际装载链 (14/17 通用): DynamicCardClusterHelper 单例持有
+        // HnStatusCapsuleSet (mCapsuleSetView), getCapsuleList() 非空 =
+        // 有胶囊记录装载. 14 版 isColoredCapsule 横屏恒真, 只看模式会让
+        // 横屏无胶囊也误入彩色分支 (B 等待 0ms 等) — 此链区分.
+        try {
+            Object helper = XposedHelpers.callStaticMethod(
+                    XposedHelpers.findClass(
+                            "com.hihonor.systemui.dynamicserver.helper.DynamicCardClusterHelper",
+                            bar.getContext().getClassLoader()),
+                    "getInstance", bar.getContext());
+            Object setView = XposedHelpers.getObjectField(helper, "mCapsuleSetView");
+            if (setView != null) {
+                Object list = XposedHelpers.callMethod(setView, "getCapsuleList");
+                if (list instanceof List) {
+                    return ((List<?>) list).size() > 0;
+                }
+            }
+        } catch (Throwable t) {
+            // 链不可用: 维持模式判定
+        }
+        return true;
+    }
     private static final Runnable sSwapPoll = new Runnable() {
         @Override
         public void run() {
@@ -286,16 +360,27 @@ public final class StatusBarContinuity {
                 sResyncDone = true;
                 resyncLayers(bar);
             }
+            // 真栏淡入期层反淡出 (修 "CC 与复制层同位叠透"): 真栏 alpha=a>0 后
+            // 层 alpha=1-a — 两层像素相同 (resync 已重截) → 合成恒定,
+            // 无叠透无空缺; 手指按住停靠期不动 (只停靠不 swap 的既定行为);
+            // 彩色胶囊基点已交还真栏 (层隐藏) — 反淡出不得回显层
+            if (!sFingerDown && sBmpOk && !sBaseHandover) {
+                float ra = realBarAlpha();
+                if (ra > 0.01f) {
+                    setLayersAlpha(Math.max(0f, 1f - ra));
+                }
+            }
             // 松手循环 (下上下上不抬指): swap 会拆层且重 engage 竞态 → 手指
             // 未抬只停靠 (复制层+真栏同位双显), 松手后 onFingerUp 重启轮询 swap.
-            if (sFingerDown && sPollCount < POLL_MAX * 4) {
+            if (sFingerDown && sPollCount < sMaxPoll) {
                 sPollCount++;
                 bar.postDelayed(this, POLL_MS);
                 return;
             }
             // 空缺根除: 停靠层是完美替身, 真实栏未重现前不拆 (早拆=顶栏空缺闪).
-            // 只等两个终点: 真实栏 ≥0.99 接替, 或 4 倍上限 (真栏确实不归的安全阀).
-            if (sPollCount >= POLL_MAX * 4 || realBarShown()) {
+            // 只等两个终点: 真实栏 ≥0.99 接替, 或上限 (真栏确实不归的安全阀;
+            // 彩色胶囊场景B 上限 0ms — 首拍吸附即交换).
+            if (sPollCount >= sMaxPoll || realBarShown()) {
                 if (!sResyncDone) { // 探针通过仍未重截 (极端): 换前同帧吸附
                     sResyncDone = true;
                     resyncLayers(bar);
@@ -339,11 +424,11 @@ public final class StatusBarContinuity {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                         try {
-                            // Port.log(TAG + ": onEndMotion y=" + param.args[0]);
+                            Port.log(TAG + ": onEndMotion y=" + param.args[0]);
                             if (sColFollow && sState == COLLAPSING) {
                                 View bar = sTarget.get();
                                 if (bar != null) {
-                                    // Port.log(TAG + ": collapse follow finger up");
+                                    Port.log(TAG + ": collapse follow finger up");
                                     startCollapseFinishAnim(bar);
                                 }
                             }
@@ -467,6 +552,18 @@ public final class StatusBarContinuity {
                 sState = IDLE;
                 return;
             }
+            if (!sFingerDown) {
+                // settle 后手指重新按下: 续接动画 (cont) 仍在驱动 progress →
+                // 与手指 spring 双写 applyProgress (层位置互搏) — 取消续接,
+                // spring 起点同步到续接已推进的进度 (防回跳), 手指为唯一进度源
+                sFingerDown = true;
+                if (sSettleCont != null) {
+                    cancelPhaseAnim(); // 先清 sPhaseAnim 再 cancel → 监听不误触 settled
+                    sSettleCont = null;
+                }
+                sSpringP = sProgress;
+                sSpringVel = 0f;
+            }
             follow(param.thisObject, bar, y);
             return;
         }
@@ -550,7 +647,7 @@ public final class StatusBarContinuity {
         cancelPhaseAnim();
         bar.removeCallbacks(sSwapPoll);
         bar.removeCallbacks(sCollapseWatch);
-        engage(bar);
+        engage(ctrl, bar);
         follow(ctrl, bar, y);
     }
 
@@ -614,6 +711,24 @@ public final class StatusBarContinuity {
     private static void applyProgress(View bar, float p) {
         sProgress = p;
         boolean full = p >= 0.999f;
+        // 彩色胶囊 (下拉/A收起): 基点判定用 "手指" 目标进度 (sSpringTarget,
+        // springTo 目标) 而非 spring 实际值 — 手指回穿 initialY 即时隐层,
+        // 不等 spring 渐近收敛到 0.0001; p>0 复制层复显接管
+        if (sColoredCapsule && sBmpOk && !full) {
+            if (sSpringTarget <= 0.0001f) {
+                if (!sBaseHandover) {
+                    sBaseHandover = true;
+                    setLayersAlpha(0f);
+                    Port.log(TAG + ": base layer hidden (colored)");
+                }
+                return;
+            }
+            if (sBaseHandover) {
+                sBaseHandover = false;
+                setLayersAlpha(1f); // contents 从未复显, 无需再藏
+                Port.log(TAG + ": base layer re-shown (colored)");
+            }
+        }
         if (full && !sRevealed && sState != COLLAPSING) {
             // COLLAPSING 收起跟手期抑制 re-reveal: p 回到 1 也不复显真栏
             // (collapse 已提交, 复制层须独占)
@@ -721,7 +836,7 @@ public final class StatusBarContinuity {
      * engage: 量 offset/收窄量, 截两段位图挂半层, 隐藏面板 contents
      * (跟手期位图独占 → 运营商/杂项/胶囊/时钟与真实栏像素级一致), 裁剪保护.
      */
-    private static void engage(View bar) {
+    private static void engage(Object ctrl, View bar) {
         boolean cycle = sBmpOk;
         // 旋转检测 (需求2): 位置定义复刻 — HwStatusbarContents
         // .updateStatusBarPaddings 内部按实际 getRotation() 分支取
@@ -765,6 +880,8 @@ public final class StatusBarContinuity {
         // 进度模型复位: 新手势从进度0/未接替/零速率开始
         sProgress = 0f;
         sRevealed = false;
+        sBaseHandover = false;
+        sColoredCapsule = detectColoredCapsule(ctrl, bar);
         sVelY = 0f;
         sSpringP = 0f;
         sSpringVel = 0f;
@@ -813,6 +930,13 @@ public final class StatusBarContinuity {
         bar.setAlpha(1f);
         bar.setVisibility(View.VISIBLE);
         ride(bar, 0f);
+        // 彩色胶囊: 进度0 (基点) 复制层隐藏 — CC 层维持隐藏态;
+        // p>0 由 applyProgress 复层接管
+        if (sColoredCapsule && sBmpOk) {
+            sBaseHandover = true;
+            setLayersAlpha(0f);
+            Port.log(TAG + ": engage at base (colored, layer hidden)");
+        }
         sState = FOLLOWING;
         sFingerDown = true;
         sLastBail = "";
@@ -1692,8 +1816,13 @@ public final class StatusBarContinuity {
             return; // 未跟手 (锁屏 shade / 补偿路径), stock 淡入
         }
         // 收起中 stock 反向重展开 (松手带反向速度 fling 重开 / 程序化展开):
-        // 撤收起跟手回调与漂移动画, 复制层原地转为展开跟手 (连续反转, 不拆层)
-        if (sState == COLLAPSING) {
+        // 撤收起跟手回调与漂移动画, 复制层原地转为展开跟手 (连续反转, 不拆层).
+        // WAITING_REAL (漂移刚停靠, swapNow 未跑) 同样纳入: 桌面下拉在漂移
+        // 末尾吞 DOWN (setTouchArea mTracking 早退, mInitialY 旧值) → tryEngage
+        // 静默失败, settle 提交直落停靠态 — 若不按层位再同步, sProgress/spring
+        // 残留 ≈1 且 sRevealed 残留 true 会让 applyProgress(1) 跳过 reveal,
+        // 停靠层跳骑 settle 位 alpha=1 不隐藏 = 与 CC 同位叠透.
+        if (sState == COLLAPSING || sState == WAITING_REAL) {
             sColFollow = false;
             sState = SETTLING; // 先切, 防 cancel 监听 finishCollapse 误停靠
             bar.removeCallbacks(sColFollowWatch);
@@ -1701,7 +1830,28 @@ public final class StatusBarContinuity {
             bar.removeCallbacks(sCollapseWatch);
             cancelPhaseAnim();
             sSpringRunning = false;
-            // Port.log(TAG + ": settle during collapse -> reverse to expand follow");
+            // drift 直改层位移, 不更新 sSpringP/sProgress (残留收起前 ≈1.0):
+            // 直接续 spring 首帧 applyProgress(1.0) 层瞬跳 settle 位压住
+            // 重展开的 CC → 重叠. 按 layer 实际位置反算 p 同步 spring 起点;
+            // reveal 残留态补 re-copy 同式交接 (真栏已隐, 层独占跟手,
+            // p 回 1 时正常 reveal).
+            ImageView rl = sLeftLayer.get();
+            float pNow = 1f;
+            if (rl != null && sOffset > 0f) {
+                pNow = Math.max(0f, Math.min(1f,
+                        (rl.getTranslationY() - sBaseTy) / sOffset));
+            }
+            sSpringP = pNow;
+            sSpringVel = 0f;
+            sProgress = pNow;
+            if (sBmpOk && sRevealed) {
+                sRevealed = false;
+                bar.setAlpha(1f);
+                hidePanelContents(bar);
+                setLayersAlpha(1f);
+                Port.log(TAG + ": settle during collapse -> reverse handover (layers re-shown)");
+            }
+            Port.log(TAG + ": settle during collapse/parked -> reverse to expand follow p0=" + pNow);
         }
         sState = SETTLING;
         cancelPhaseAnim();
@@ -1709,6 +1859,12 @@ public final class StatusBarContinuity {
         bar.removeCallbacks(sSwapPoll);
         bar.setVisibility(View.VISIBLE); // 同帧对抗 stock 前置 GONE
         showLayers();
+        // 彩色胶囊: settle 提交即 reveal (复制层立即隐藏) — 不等占位 400ms
+        // 推进到 0.999: 彩色路线真栏 100-200ms 已自行淡入, 等待期层压真栏叠透
+        if (sColoredCapsule && sBmpOk && !sRevealed) {
+            applyProgress(bar, 1f);
+            Port.log(TAG + ": settle reveal immediate (colored)");
+        }
         ValueAnimator hold = ValueAnimator.ofFloat(0f, 1f);
         hold.setDuration(400L); // ≈首卡片时长: 若成为 stock 总集 get(0) 不压缩卡片动画
         hold.setInterpolator(springIp(400f, SPRING_K)); // spring 曲线推进
@@ -1763,6 +1919,7 @@ public final class StatusBarContinuity {
         // 静态手势 (旋转首拉) 收起兜底: 面板已展开重排, 几何可信即重测
         // 并把复制层刷到 settle 位 (reveal 后未刷成时) — 本次收起即正确
         refreshStaticGeometry(bar);
+        sColoredCapsule = detectColoredCapsule(param.thisObject, bar);
         sState = COLLAPSING;
         cancelPhaseAnim();
         sSpringRunning = false;
@@ -1771,6 +1928,7 @@ public final class StatusBarContinuity {
         View pc = getPanelContents(bar);
         // 1 帧硬切: 位图半层瞬时接管, CC 栏瞬时隐去
         if (sBmpOk) {
+            sRevealed = false; // B 路径收起: 层独占, 清 reveal 残留 (防停靠期 settle 再同步前跳过 reveal)
             bar.setAlpha(0f);
         } else {
             applyTint(pc, sRealTint); // 降级: 无位图, 硬切回真实色 (二轮行为)
@@ -1808,13 +1966,13 @@ public final class StatusBarContinuity {
                 bar.setAlpha(1f);
                 hidePanelContents(bar);
                 setLayersAlpha(1f);
-                // Port.log(TAG + ": collapse follow takeover (layers re-shown)");
+                Port.log(TAG + ": collapse follow takeover (layers re-shown)");
             }
             AnimatorSet dummy = new AnimatorSet();
             dummy.setDuration(300L);
             param.setResult(dummy);
-            // Port.log(TAG + ": collapse follow armed (anchored mInitialY) "
-            //         + layerChainState());
+            Port.log(TAG + ": collapse follow armed (anchored mInitialY) "
+                    + layerChainState());
             // 用触发 MOVE 的手指位置立即起跟 (快甩不等下一拍)
             applyCollapseFollow(param.thisObject, bar, sLastMoveY);
             return;
@@ -1886,10 +2044,15 @@ public final class StatusBarContinuity {
     /** 收起漂移结束: 停靠真实栏位置, 启动收尾轮询 (重截窗口 + 重现探针). */
     private static void finishCollapse(View bar) {
         if (sState == COLLAPSING) {
+            // 彩色胶囊 (场景B 漂移, bar 已隐 alpha=0): 与普通停靠/轮询/反淡出
+            // 全流程一致, 仅最大等待时长 0ms — 首拍即吸附交换, 不留替身等待
+            sMaxPoll = (sColoredCapsule && sBmpOk && bar.getAlpha() < 0.5f)
+                    ? POLL_MAX / 2 : POLL_MAX * 4;
             sState = WAITING_REAL;
             showLayers(); // fling 收尾遍历可能隐藏过位图层, 停靠即复显
             startSwapPoll(bar);
-            Port.log(TAG + ": parked at -" + sOffset + " " + layerChainState());
+            Port.log(TAG + ": parked at -" + sOffset + " maxPoll=" + sMaxPoll
+                    + " " + layerChainState());
         }
     }
 
@@ -1914,11 +2077,16 @@ public final class StatusBarContinuity {
             sColFollow = false;
             bar.removeCallbacks(sColFollowWatch);
             bar.removeCallbacks(sColBaseWatch);
-            bar.postDelayed(sColBaseWatch, 200L); // spring 归零时长后停靠
+            // 400ms ≈ spring 全行程收敛时长 (200ms 时长行程未收敛, 提前停靠
+            // 即使强制钉基点也有 60px 级跳变); 收敛不足时由 base watch 钉基点兜底
+            bar.postDelayed(sColBaseWatch, 400L);
             springTo(bar, 0f);
-            // Port.log(TAG + ": collapse follow hand at initialY, spring to base");
+            Port.log(TAG + ": collapse follow hand at initialY, spring to base");
             return;
         }
+        // 手指离开基点 (p>0): 撤销基点自动停靠定时 — 残留触发会强杀跟手
+        // spring 误停靠 (手指仍在拖), 与回穿收起误触同源
+        bar.removeCallbacks(sColBaseWatch);
         springTo(bar, p);
     }
 
@@ -1974,7 +2142,7 @@ public final class StatusBarContinuity {
         set.start();
         bar.removeCallbacks(sCollapseWatch);
         bar.postDelayed(sCollapseWatch, ms + 150L);
-        // Port.log(TAG + ": collapse follow finish anim " + ms + "ms remain=" + remain);
+        Port.log(TAG + ": collapse follow finish anim " + ms + "ms remain=" + remain);
     }
 
     /** 停靠期面板重开: 停靠替身过时, 拆层复位交还 stock 原生重开 (无连贯). */
@@ -2034,6 +2202,31 @@ public final class StatusBarContinuity {
         }
     }
 
+    /** 真实栏当前淡入 alpha (clock/电池较大者, 0=未现). */
+    private static float realBarAlpha() {
+        try {
+            View realBar = sRealBar.get();
+            if (realBar == null) {
+                return 0f;
+            }
+            float best = 0f;
+            View clock = sRealClockRef.get();
+            if (clock == null && sClockId != 0) {
+                clock = realBar.findViewById(sClockId);
+            }
+            if (clock != null && clock.isShown()) {
+                best = effectiveAlpha(clock);
+            }
+            View bat = findBattery(realBar);
+            if (bat != null && bat.isShown()) {
+                best = Math.max(best, effectiveAlpha(bat));
+            }
+            return best;
+        } catch (Throwable t) {
+            return 0f;
+        }
+    }
+
     /** 真实栏内容开始重现 (布局已刷新, 淡入中): 隐私胶囊重截窗口触发条件 (3). */
     private static boolean realShowFading() {
         try {
@@ -2081,6 +2274,7 @@ public final class StatusBarContinuity {
                 + " poll=" + sPollCount + " " + layerChainState());
         hideBar(bar);
         restoreForcedVis();
+        sBaseHandover = false;
         sState = IDLE;
     }
 
@@ -2147,6 +2341,7 @@ public final class StatusBarContinuity {
 
                 @Override
                 public void onAnimationEnd(Animator a) {
+                    sSettleCont = null;
                     if (sPhaseAnim == cont && sState == SETTLING) {
                         // 续接到 100: 真栏接替 + 静态刷新 (cancel 不入)
                         applyProgress(sBar, 1f);
@@ -2168,6 +2363,7 @@ public final class StatusBarContinuity {
                 }
             });
             sPhaseAnim = cont;
+            sSettleCont = cont;
             cont.start();
             Port.log(TAG + ": settle continue from " + sProgress);
             return;
@@ -2313,6 +2509,7 @@ public final class StatusBarContinuity {
     // ---------------------------------------------------------------- helpers
 
     private static void cancelPhaseAnim() {
+        sSettleCont = null;
         Animator a = sPhaseAnim;
         if (a != null) {
             sPhaseAnim = null;
