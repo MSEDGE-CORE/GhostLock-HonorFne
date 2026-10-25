@@ -49,6 +49,19 @@ have_root() { $T15 adb shell "su 0 id" 2>/dev/null | grep -q "uid=0"; }
 injected() {
     $T15 adb shell "su 0 sh -c 'for Z in \$(pidof zygote64); do grep -q zygisk_lsposed /proc/\$Z/maps 2>/dev/null && exit 0; done; exit 1'" 2>/dev/null
 }
+daemon_alive() {
+    $T15 adb shell "su 0 sh -c 'pidof zn-daemon >/dev/null 2>&1'" 2>/dev/null
+}
+# zip 内 pristine module.prop (211B, sha256=2f8cdf9a...) 的 base64。
+# daemon 两种失败改写格式(29B 裸标记 / description 嵌入)都会破坏
+# verify1 哈希自检, module.prop.orig 也可能被连带改坏, 故无条件双还原。
+PRISTINE_B64='aWQ9enlnaXNrc3UKbmFtZT1aeWdpc2sgTmV4dAp2ZXJzaW9uPTEuNS4yICg4NjQtYTRhNzJjZS1yZWxlYXNlKQp2ZXJzaW9uQ29kZT04NjQKYXV0aG9yPUxTUG9zZWQgRGV2ZWxvcGVycwpkZXNjcmlwdGlvbj1TdGFuZGFsb25lIGltcGxlbWVudGF0aW9uIG9mIFp5Z2lzay4KdXBkYXRlSnNvbj1odHRwczovL2xzcG9zZWQuemlwL3p5Z2lzay1uZXh0L3VwZGF0ZS5qc29uCg=='
+# 杀旧 daemon + 双还原 module.prop + 清失败标记 + 恢复 .magic + 拉起注入
+# 链(见头部注释 3/4)。daemon 失败会污染 module.prop/失败标记, 每次拉起
+# 前必须全套还原; [3/4] 与 [4/4] 超时重拉共用本函数。
+relaunch_daemon() {
+    $T30 adb shell "su 0 sh -c 'pkill -9 zn-daemon 2>/dev/null; pkill -9 zygiskd64 2>/dev/null; pkill -9 lspd 2>/dev/null; sleep 1; echo $PRISTINE_B64 | base64 -d > $MOD/module.prop.orig; cp $MOD/module.prop.orig $MOD/module.prop; rm -f /data/adb/zygisksu/.abort_msg /data/adb/zygisksu/.injecting $MOD/disable $MOD/update; if [ -f /data/adb/zygisksu.bak/.magic ]; then cp /data/adb/zygisksu.bak/.magic /data/adb/zygisksu/.magic; chmod 666 /data/adb/zygisksu/.magic; fi; sh $MOD/service.sh'" >/dev/null 2>&1
+}
 
 echo "      激活 Zygisk/LSPosed 注入..."
 # su 可能晚于模块就绪(ksud 阶段注入 allowlist): 轮询等待, 最长 60s
@@ -107,11 +120,7 @@ $T30 adb shell "su 0 $MP --live 'permissive kernel' 'permissive zygote' 'permiss
 $T30 adb shell "su 0 sh -c 'for r in /data/adb/modules/*/sepolicy.rule; do [ -f \"\$r\" ] && $MP --apply \"\$r\" 2>/dev/null; done'" >/dev/null 2>&1
 
 echo "      [3/4] 还原 module.prop + 清失败标记并重启注入链..."
-# zip 内 pristine module.prop (211B, sha256=2f8cdf9a...) 的 base64。
-# daemon 两种失败改写格式(29B 裸标记 / description 嵌入)都会破坏
-# verify1 哈希自检, module.prop.orig 也可能被连带改坏, 故无条件双还原。
-PRISTINE_B64='aWQ9enlnaXNrc3UKbmFtZT1aeWdpc2sgTmV4dAp2ZXJzaW9uPTEuNS4yICg4NjQtYTRhNzJjZS1yZWxlYXNlKQp2ZXJzaW9uQ29kZT04NjQKYXV0aG9yPUxTUG9zZWQgRGV2ZWxvcGVycwpkZXNjcmlwdGlvbj1TdGFuZGFsb25lIGltcGxlbWVudGF0aW9uIG9mIFp5Z2lzay4KdXBkYXRlSnNvbj1odHRwczovL2xzcG9zZWQuemlwL3p5Z2lzay1uZXh0L3VwZGF0ZS5qc29uCg=='
-$T30 adb shell "su 0 sh -c 'pkill -9 zn-daemon 2>/dev/null; pkill -9 zygiskd64 2>/dev/null; pkill -9 lspd 2>/dev/null; sleep 1; echo $PRISTINE_B64 | base64 -d > $MOD/module.prop.orig; cp $MOD/module.prop.orig $MOD/module.prop; rm -f /data/adb/zygisksu/.abort_msg /data/adb/zygisksu/.injecting $MOD/disable $MOD/update; if [ -f /data/adb/zygisksu.bak/.magic ]; then cp /data/adb/zygisksu.bak/.magic /data/adb/zygisksu/.magic; chmod 666 /data/adb/zygisksu/.magic; fi; sh $MOD/service.sh'" >/dev/null 2>&1
+relaunch_daemon
 h=$($T15 adb shell "su 0 sha256sum $MOD/module.prop" 2>/dev/null | tr -d '\r' | cut -c1-16)
 if [ "$h" != "2f8cdf9a676ed7b8" ]; then
     echo "      [警告] module.prop 还原后哈希异常($h), verify1 大概率失败"
@@ -129,6 +138,37 @@ for i in $(seq 1 48); do
     if injected; then ok=1; break; fi
     echo "        ... 第 $((i*5))s, zygote 尚未注入"
 done
+
+# 240s 未确认的兜底(Windows 端 00:34 失败 vs mac 端 00:46 手动重拉全绿的
+# 对照实证): grind 刚结束时 ksud/su 通路未稳, daemon 拉起即退(ksu fd
+# released)且无人重启。按 daemon 状态分流: 活着 = 追加等 60s; 死了 = 等 su
+# 连续 2 次稳定通过后重拉 daemon(重走 [3/4] 全套还原), 再给 120s 窗口。
+if [ $ok -ne 1 ]; then
+    echo "      [4/4] 240s 未确认, 检查 daemon 状态..."
+    if daemon_alive; then
+        echo "        daemon 存活, 追加等待 60s..."
+        for i in $(seq 1 12); do
+            sleep 5
+            injected && { ok=1; break; }
+        done
+    elif have_root; then
+        echo "        daemon 已退出, 等 su/KSU 通路稳定(连续 2 次通过, 最长 120s)..."
+        n=0; stable=0
+        while [ $n -lt 24 ]; do
+            if have_root; then stable=$((stable+1)); else stable=0; fi
+            [ $stable -ge 2 ] && break
+            sleep 5; n=$((n+1))
+        done
+        if [ $stable -ge 2 ]; then
+            echo "        通路已稳, 重拉 daemon 并等待第二窗口(最长 120s)..."
+            relaunch_daemon
+            for i in $(seq 1 24); do
+                sleep 5
+                injected && { ok=1; break; }
+            done
+        fi
+    fi
+fi
 
 if [ $ok -eq 1 ]; then
     # lspd 启动/管理器打开时用 dex2oat 探针自检 sepolicy 规则是否加载,
