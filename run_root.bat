@@ -61,7 +61,7 @@ echo [2/5] Connecting device (USB)
 :devcheck
 adb get-state >nul 2>nul
 if errorlevel 1 (
-    echo       Waiting for device (connect USB and allow USB debugging authorization)...
+    echo       Waiting for device - connect USB and allow USB debugging authorization
     adb wait-for-device
 )
 echo       Connected:
@@ -88,7 +88,7 @@ if not errorlevel 1 (
 set /a KSU_TRIES+=1
 >> "%LOG%" echo [3/5] ksu probe miss try=%KSU_TRIES%
 if %KSU_TRIES% LSS 2 (
-    echo       No response, retrying (%KSU_TRIES%/2)...
+    echo       No response, retrying - try %KSU_TRIES% of 2
     ping -n 6 127.0.0.1 >nul
     goto :ksu_chk
 )
@@ -98,7 +98,7 @@ if "%KSU_LOADED%"=="1" (
     echo       KernelSU is already running, no need to re-root.
     >> "%LOG%" echo [3/5] ksu already loaded - top up install/activate
     call :ensure_module
-    rem Previous run may have timed out and falsely reported "not landed" (module loaded but su not ready): complete installation/activation, rerun to fix.
+    rem Previous run may have timed out and falsely reported "not landed" - module loaded but su not ready. Complete installation/activation, rerun to fix.
     echo       --- Completing KSU / LSP manager installation and Zygisk activation ---
     "%BASH%" "root/host-scripts/install_managers.sh"
     "%BASH%" "root/host-scripts/activate_zygisk.sh"
@@ -113,7 +113,7 @@ echo.
 rem ---------- 4/5 Deploy (unconditional overwrite) ----------
 rem Overwrite instead of skip-if-exists: chain_hook.sh / ko / syms iterate frequently; existence check would prevent already-deployed devices from getting new versions (LSA merge fix was stuck on old chain_hook).
 if not exist "root\exploit\ghostlock" (
-    echo [ERROR] Missing root\exploit\ghostlock (exploit binary).
+    echo [ERROR] Missing root\exploit\ghostlock - exploit binary.
     echo         This repo should ship prebuilt artifacts; if you cloned via git and it's missing,
     echo         please update to the latest version; or refer to README "Rebuild" section with
     echo         Android NDK r27c:  cd root\exploit ^&^& ANDROID_NDK_HOME=.. make
@@ -249,7 +249,7 @@ rem Rules are read and injected during ksud late-load, so updates activate autom
 :ensure_module
 adb shell "su 0 sh -c 'mkdir -p /data/adb/modules/netfix_packet && cp -rf /data/local/tmp/netfix_packet/. /data/adb/modules/netfix_packet/'" >nul 2>nul
 adb shell "su 0 sh -c '[ -f /data/adb/modules/netfix_packet/sepolicy.rule ]'" >nul 2>nul && (
-    echo       netfix_packet module synced (network/RRO/status bar/nav bar/AOD fix)
+    echo       netfix_packet module synced - network/RRO/status bar/nav bar/AOD fix
 ) || (
     echo       [WARN] netfix_packet module sync failed
 )
