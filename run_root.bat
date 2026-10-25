@@ -5,10 +5,7 @@ cd /d "%~dp0"
 rem ASCII-ONLY on purpose. Do NOT add "chcp 65001" or non-ASCII text:
 rem cmd + UTF-8 codepage + batch file has a read-block mis-seek bug that
 rem aborts the batch mid-run (= window flash close). Hit after [2/5] on
-rem 2026-10-23. If the window still closes, read the LAST line of
-rem run_root.log - it marks the crash point.
-set "LOG=%~dp0run_root.log"
-> "%LOG%" echo === run_root.bat start %date% %time% ===
+rem 2026-10-23.
 
 echo ==================================================
 echo    GhostLock-HonorFne  One-Click Temporary Root (Windows)
@@ -23,7 +20,6 @@ echo   [2] Uninstall (clean device-side files and module staging; does not unins
 set "MODE=1"
 set /p "MODE=Enter 1 or 2 and press Enter: "
 if "%MODE%"=="2" goto :undo
->> "%LOG%" echo mode select: %MODE%
 goto :deploy
 
 :undo
@@ -53,7 +49,6 @@ if not defined BASH (
 )
 if not defined BASH goto :no_bash
 echo       OK: adb and Git Bash are ready
->> "%LOG%" echo [1/5] deps ok
 echo.
 
 rem ---------- 2/5 Connect device ----------
@@ -66,12 +61,10 @@ if errorlevel 1 (
 )
 echo       Connected:
 adb devices
->> "%LOG%" echo [2/5] device connected
 echo.
 
 rem ---------- 3/5 Root status check ----------
 echo [3/5] Checking KernelSU status...
->> "%LOG%" echo [3/5] ksu check start
 rem Wireless adb single-shell transient disconnect (empty response) may falsely
 rem report "not loaded" and trigger a full exploit run; repeating W2 within the
 rem same boot causes a slab_drain fork storm that may trigger a protective reboot.
@@ -86,17 +79,14 @@ if not errorlevel 1 (
     goto :ksu_done
 )
 set /a KSU_TRIES+=1
->> "%LOG%" echo [3/5] ksu probe miss try=%KSU_TRIES%
 if %KSU_TRIES% LSS 2 (
     echo       No response, retrying - try %KSU_TRIES% of 2
     ping -n 6 127.0.0.1 >nul
     goto :ksu_chk
 )
 :ksu_done
->> "%LOG%" echo [3/5] ksu check done loaded=%KSU_LOADED%
 if "%KSU_LOADED%"=="1" (
     echo       KernelSU is already running, no need to re-root.
-    >> "%LOG%" echo [3/5] ksu already loaded - top up install/activate
     call :ensure_module
     rem Previous run may have timed out and falsely reported "not landed" - module loaded but su not ready. Complete installation/activation, rerun to fix.
     echo       --- Completing KSU / LSP manager installation and Zygisk activation ---
@@ -107,7 +97,6 @@ if "%KSU_LOADED%"=="1" (
     exit /b 0
 )
 echo       KernelSU not loaded, continuing.
->> "%LOG%" echo [3/5] ksu not loaded
 echo.
 
 rem ---------- 4/5 Deploy (unconditional overwrite) ----------
@@ -130,7 +119,6 @@ for %%F in (chain_hook.sh kernelsu.ko ksud magiskpolicy ksu_rules load_ko kmsg_d
     )
 )
 echo [4/5] Deploying device-side files (~20MB, overwrite sync, please wait)...
->> "%LOG%" echo [4/5] deploy start
 adb shell "mkdir -p /data/local/tmp/ksu_fne"
 adb push "root/exploit/ghostlock" /data/local/tmp/e
 if errorlevel 1 goto :push_fail
@@ -140,7 +128,6 @@ for %%F in (chain_hook.sh kernelsu.ko ksud magiskpolicy ksu_rules load_ko kmsg_d
 )
 adb shell "chmod 755 /data/local/tmp/ksu_fne/chain_hook.sh /data/local/tmp/ksu_fne/magiskpolicy /data/local/tmp/ksu_fne/ksud /data/local/tmp/ksu_fne/load_ko /data/local/tmp/ksu_fne/kmsg_dumper"
 echo       Deployment complete.
->> "%LOG%" echo [4/5] deploy done
 echo.
 
 rem netfix_packet module is small and iterates quickly: always re-transfer to ensure module fixes (sepolicy rules / LSPosed tmpfs patch) are synced to device.
@@ -149,7 +136,6 @@ echo       Syncing netfix_packet module...
 adb shell "rm -rf /data/local/tmp/netfix_packet" >nul 2>nul
 adb push "root/ksu-modules/netfix_packet" /data/local/tmp/
 if errorlevel 1 goto :push_fail
->> "%LOG%" echo [4/5] netfix_packet synced
 echo.
 
 :grind
@@ -159,7 +145,6 @@ echo       * Fully automatic, includes multiple device reboots, may take a long 
 echo       * Do not close this window; do not run other grinds simultaneously
 echo       * Script stops automatically on success
 echo.
->> "%LOG%" echo [5/5] grind start
 "%BASH%" "root/host-scripts/run_forever.sh"
 echo.
 
@@ -169,7 +154,6 @@ if not errorlevel 1 goto :ksu_ok
 goto :ksu_fail
 
 :ksu_fail
->> "%LOG%" echo [5/5] grind failed
 call :ensure_module
 echo ==================================================
 echo    [FAILED] This grind did not land, you can rerun and try again.
@@ -177,7 +161,6 @@ echo ==================================================
 goto :done_root
 
 :ksu_ok
->> "%LOG%" echo [5/5] grind ok
 call :ensure_module
 echo ==================================================
 echo    [SUCCESS] KernelSU loaded, temporary root ready!
@@ -195,7 +178,6 @@ pause
 exit /b 0
 
 :no_adb
->> "%LOG%" echo [ERR] no_adb
 echo [ERROR] adb not found.
 echo         Please install Android platform-tools and add adb directory to PATH.
 timeout /t 30 /nobreak >nul
@@ -203,7 +185,6 @@ pause
 exit /b 1
 
 :no_bash
->> "%LOG%" echo [ERR] no_bash
 echo [ERROR] Git Bash not found.
 echo         Please install Git for Windows (https://git-scm.com/download/win).
 timeout /t 30 /nobreak >nul
@@ -211,7 +192,6 @@ pause
 exit /b 1
 
 :push_fail
->> "%LOG%" echo [ERR] push_fail
 echo [ERROR] File push failed. Check connection and USB debugging authorization and retry.
 timeout /t 30 /nobreak >nul
 pause
