@@ -1,20 +1,20 @@
 #!/bin/bash
-# GhostLock-HonorFne 一键临时 root（macOS）
-# 双击运行；若被 Gatekeeper 拦截，右键 -> 打开，或终端执行 bash run_root.command
+# GhostLock-HonorFne One-Click Temporary Root (macOS)
+# Double-click to run; if blocked by Gatekeeper, right-click -> Open, or run in terminal: bash run_root.command
 cd "$(dirname "$0")" || exit 1
 
 echo "=================================================="
-echo "   GhostLock-HonorFne  一键临时 root（macOS）"
-echo "   目标设备: 荣耀70 FNE-AN00（Bootloader 锁定）"
+echo "   GhostLock-HonorFne  One-Click Temporary Root (macOS)"
+echo "   Target: HONOR 70 FNE-AN00 (Bootloader Locked)"
 echo "=================================================="
 echo
 
-# ---------- 模式选择：部署 / 撤销 ----------
-echo "请选择运行模式:"
-echo "  [1] 部署 / 一键临时 root（默认）"
-echo "  [2] 撤销部署（清理设备端传输文件与模块中转；不卸载管理器/app）"
+# ---------- Mode selection: deploy / uninstall ----------
+echo "Please select mode:"
+echo "  [1] Deploy / One-click temporary root (default)"
+echo "  [2] Uninstall (clean device-side files and module staging; does not uninstall manager/app)"
 MODE=1
-read -p "输入 1 或 2 后回车: " MODE
+read -p "Enter 1 or 2 and press Enter: " MODE
 case "$MODE" in
     2)
         ADB="$(command -v adb 2>/dev/null || true)"
@@ -24,40 +24,40 @@ case "$MODE" in
             done
         fi
         if [ -z "$ADB" ]; then
-            echo "[错误] 未找到 adb。"
-            read -p "按回车键退出..."
+            echo "[ERROR] adb not found."
+            read -p "Press Enter to exit..."
             exit 1
         fi
         export PATH="$(dirname "$ADB"):$PATH"
         bash "root/host-scripts/uninstall.sh"
         echo
-        read -p "按回车键退出..."
+        read -p "Press Enter to exit..."
         exit 0
         ;;
 esac
 echo
 
 exit_push() {
-    echo "[错误] 文件推送失败。请检查连接与 USB 调试授权后重试。"
-    read -p "按回车键退出..."
+    echo "[ERROR] File push failed. Check connection and USB debugging authorization and retry."
+    read -p "Press Enter to exit..."
     exit 1
 }
 
-# netfix_packet 模块安装（KSU 就绪后调用）。
-# /data/adb 为 root 目录，adb 直推不行：先经 /data/local/tmp 中转，su 0 合并同步装入。
-# 无条件同步（cp -rf 合并，保留运行时 netfix.log）：保证模块修复/更新始终生效。
-# 规则在 ksud late-load 时读取注入，故更新自下一次提权/重启起自动激活。
+# netfix_packet module installation (called after KSU ready).
+# /data/adb is a root directory, adb direct push won't work: stage via /data/local/tmp, then su 0 merge-sync install.
+# Unconditional sync (cp -rf merge, preserve runtime netfix.log): ensure module fixes/updates always take effect.
+# Rules are read and injected during ksud late-load, so updates activate automatically from next root/reboot.
 ensure_module() {
     "$ADB" shell "su 0 sh -c 'mkdir -p /data/adb/modules/netfix_packet && cp -rf /data/local/tmp/netfix_packet/. /data/adb/modules/netfix_packet/'" >/dev/null 2>&1
     if "$ADB" shell "su 0 sh -c '[ -f /data/adb/modules/netfix_packet/sepolicy.rule ]'" >/dev/null 2>&1; then
-        echo "      netfix_packet 模块已同步（网络/RRO/状态栏/导航栏/AOD 修复）"
+        echo "      netfix_packet module synced (network/RRO/status bar/nav bar/AOD fix)"
     else
-        echo "      [警告] netfix_packet 模块同步失败"
+        echo "      [WARN] netfix_packet module sync failed"
     fi
 }
 
-# ---------- 1/5 依赖检查 ----------
-echo "[1/5] 检查依赖..."
+# ---------- 1/5 Dependency check ----------
+echo "[1/5] Checking dependencies..."
 ADB="$(command -v adb 2>/dev/null || true)"
 if [ -z "$ADB" ]; then
     for p in "$HOME/Library/Android/sdk/platform-tools/adb" /usr/local/bin/adb /opt/homebrew/bin/adb; do
@@ -65,75 +65,80 @@ if [ -z "$ADB" ]; then
     done
 fi
 if [ -z "$ADB" ]; then
-    echo "[错误] 未找到 adb。"
-    echo "       安装：brew install --cask android-platform-tools"
-    echo "       或将 adb 所在目录加入 PATH 后重试。"
-    read -p "按回车键退出..."
+    echo "[ERROR] adb not found."
+    echo "       Install: brew install --cask android-platform-tools"
+    echo "       Or add adb directory to PATH and retry."
+    read -p "Press Enter to exit..."
     exit 1
 fi
-export PATH="$(dirname "$ADB"):$PATH"   # run_forever.sh 内部裸调 adb
-echo "      OK: adb 就绪（$ADB）"
+export PATH="$(dirname "$ADB"):$PATH"   # run_forever.sh calls adb directly
+echo "      OK: adb ready ($ADB)"
 echo
 
-# ---------- 2/5 连接设备 ----------
-echo "[2/5] 连接设备（USB）"
+# ---------- 2/5 Connect device ----------
+echo "[2/5] Connecting device (USB)"
 if ! "$ADB" get-state >/dev/null 2>&1; then
-    echo "      等待设备接入（请插好 USB 并允许 USB 调试授权）..."
+    echo "      Waiting for device - connect USB and allow USB debugging authorization..."
     "$ADB" wait-for-device
 fi
-echo "      已连接:"
+echo "      Connected:"
 "$ADB" devices
 echo
 
-# ---------- 3/5 root 状态检查 ----------
-echo "[3/5] 检查 KernelSU 状态..."
-# 无线 adb 单次 shell 瞬断(空响应)会把"已加载"误判为"未加载"而整跑
-# exploit——同 boot 重复 W2 的 slab_drain fork 风暴会触发系统保护性
-# 重启(295 用户 18:14 实测)。最多 2 次检测抗瞬断(与 run_root.bat /
-# run_w2.sh / uninstall.sh 同规则: 间隔 5s, 任一次命中即判已加载)。
+# ---------- 3/5 Root status check ----------
+echo "[3/5] Checking KernelSU status..."
+# Wireless adb single-shell transient disconnect (empty response) may falsely
+# report "not loaded" and trigger a full exploit run; repeating W2 within the
+# same boot causes a slab_drain fork storm that may trigger a protective reboot
+# (observed on 295 devices at 18:14). Max 2 checks to resist transient disconnect
+# (same rule as run_root.bat / run_w2.sh / uninstall.sh: 5s interval, either
+# check hitting = treat as loaded).
 KSU_LOADED=0
 for i in 1 2; do
     if "$ADB" shell "grep -q kernelsu /proc/modules" >/dev/null 2>&1; then
         KSU_LOADED=1
         break
     fi
-    [ "$i" -lt 2 ] && { echo "      检测无响应，重试($i/2)..."; sleep 5; }
+    [ "$i" -lt 2 ] && { echo "      No response, retrying ($i/2)..."; sleep 5; }
 done
 if [ "$KSU_LOADED" = "1" ]; then
-    echo "      KernelSU 已在运行，无需再次提权。"
-    # ksu_diag: /proc/modules 与 sysfs 双口径对照——模块已加载但上层
-    # 校验(sysfs/su/boot_completed)未过时, 由此定位卡在哪一环。
+    echo "      KernelSU is already running, no need to re-root."
+    # ksu_diag: cross-check /proc/modules against sysfs - when module is loaded
+    # but upper-level checks (sysfs/su/boot_completed) fail, this locates the stuck stage.
     echo "      --- ksu_diag ---"
     "$ADB" shell "grep kernelsu /proc/modules" 2>/dev/null | tr -d '\r' | sed 's/^/        modules: /'
     SYSFS_KSU=$("$ADB" shell "ls -d /sys/module/kernelsu 2>/dev/null" 2>/dev/null | tr -d '\r')
-    echo "        sysfs: ${SYSFS_KSU:-/sys/module/kernelsu 不存在}"
+    echo "        sysfs: ${SYSFS_KSU:-/sys/module/kernelsu not found}"
     "$ADB" shell "su 0 id" 2>/dev/null | tr -d '\r' | sed 's/^/        su 0 id: /'
     echo "        boot_completed: $("$ADB" shell "getprop sys.boot_completed" 2>/dev/null | tr -d '\r')"
     ensure_module
-    # 上次运行可能超时误判"未落地"(模块已加载但 su 未就绪): 补齐安装/激活,
-    # 重跑即修复
-    echo "      --- 补齐 KSU / LSP 管理器与 Zygisk 激活 ---"
+    # Previous run may have timed out and falsely reported "not landed"
+    # (module loaded but su not ready): complete installation/activation,
+    # rerun to fix.
+    echo "      --- Completing KSU / LSP manager installation and Zygisk activation ---"
     bash "root/host-scripts/install_managers.sh"
     bash "root/host-scripts/activate_zygisk.sh"
     echo
-    read -p "按回车键退出..."
+    read -p "Press Enter to exit..."
     exit 0
 fi
-echo "      KernelSU 未加载，继续。"
+echo "      KernelSU not loaded, continuing."
 echo
 
-# ---------- 4/5 部署（无条件覆盖） ----------
-# 覆盖而非存在即跳过：chain_hook.sh / ko / syms 迭代频繁，存在校验会
-# 让已部署设备拿不到新版（LSA merge 修复就卡在旧 chain_hook 上）。
-# adb push 本身即覆盖写。
+# ---------- 4/5 Deploy (unconditional overwrite) ----------
+# Overwrite instead of skip-if-exists: chain_hook.sh / ko / syms iterate
+# frequently; existence check would prevent already-deployed devices from
+# getting new versions (LSA merge fix was stuck on old chain_hook).
+# adb push itself overwrites.
 if [ ! -f "root/exploit/ghostlock" ]; then
-    echo "[错误] 未找到 root/exploit/ghostlock（exploit 二进制）。"
-    echo "       本仓库应自带预编译产物；若你通过 git clone 获取且缺失，请先更新到最新版本；"
-    echo "       或参考 README \"重新构建\" 一节自备 Android NDK r27c 后执行:"
-    echo "         cd root/exploit && ANDROID_NDK_HOME=<NDK路径> make"
+    echo "[ERROR] Missing root/exploit/ghostlock (exploit binary)."
+    echo "       This repo should ship prebuilt artifacts; if you cloned via git and it's missing,"
+    echo "       please update to the latest version; or refer to README \"Rebuild\" section with"
+    echo "       Android NDK r27c:"
+    echo "         cd root/exploit && ANDROID_NDK_HOME=<NDK_PATH> make"
     exit 1
 fi
-echo "[4/5] 部署设备端文件（约 20MB，覆盖同步，请稍候）..."
+echo "[4/5] Deploying device-side files (~20MB, overwrite sync, please wait)..."
 "$ADB" shell "mkdir -p /data/local/tmp/ksu_fne" || exit_push
 "$ADB" push "root/exploit/ghostlock" /data/local/tmp/e || exit_push
 "$ADB" shell "chmod 755 /data/local/tmp/e"
@@ -141,71 +146,73 @@ for f in chain_hook.sh kernelsu.ko ksud magiskpolicy ksu_rules load_ko kmsg_dump
     "$ADB" push "root/ksu-late-load/$f" /data/local/tmp/ksu_fne/ || exit_push
 done
 "$ADB" shell "chmod 755 /data/local/tmp/ksu_fne/chain_hook.sh /data/local/tmp/ksu_fne/magiskpolicy /data/local/tmp/ksu_fne/ksud /data/local/tmp/ksu_fne/load_ko /data/local/tmp/ksu_fne/kmsg_dumper"
-echo "      部署完成。"
+echo "      Deployment complete."
 
-# netfix_packet 模块体积小、迭代快：每次都重新传输，
-# 确保模块修复（sepolicy 规则 / LSPosed tmpfs 补丁）总能同步到设备。
-echo "      同步 netfix_packet 模块..."
+# netfix_packet module is small and iterates quickly: always re-transfer to
+# ensure module fixes (sepolicy rules / LSPosed tmpfs patch) are synced to device.
+echo "      Syncing netfix_packet module..."
 "$ADB" shell "rm -rf /data/local/tmp/netfix_packet" || exit_push
 "$ADB" push "root/ksu-modules/netfix_packet" /data/local/tmp/ || exit_push
 echo
 
-# ---------- 可选板块：安装桌面修改（Launcher/SystemUI hooks） ----------
-# KSU/LSPosed 成功后调用。默认跳过，选 y 安装：
-#   HnLauncherPort.apk (LSPosed 模块: 桌面布局 + 控制中心动效优化)
+# ---------- Optional: install launcher mods (Launcher/SystemUI hooks) ----------
+# Called after KSU/LSPosed success. Default skip, choose y to install:
+#   HnLauncherPort.apk (LSPosed module: launcher layout + control center animation optimization)
 install_launcher_mods() {
     echo
-    read -p "是否安装桌面修改（HnLauncherPort）? [y/N]: " ans
+    read -p "Install launcher mods (HnLauncherPort)? [y/N]: " ans
     case "$ans" in
         y|Y)
             if [ ! -f "hooks/launcher/out/HnLauncherPort.apk" ]; then
-                echo "      [错误] 未找到 hooks/launcher/out/HnLauncherPort.apk"
+                echo "      [ERROR] Missing hooks/launcher/out/HnLauncherPort.apk"
                 return 1
             fi
-            echo "      安装 HnLauncherPort.apk ..."
+            echo "      Installing HnLauncherPort.apk ..."
             if ! "$ADB" install -r "hooks/launcher/out/HnLauncherPort.apk" >/dev/null 2>&1; then
-                echo "      [错误] APK 安装失败"
+                echo "      [ERROR] APK installation failed"
                 return 1
             fi
-            echo "      APK 安装成功。"
-            echo "      提示: 首次需在 LSPosed 管理器中启用模块并勾选"
-            echo "            作用域（荣耀桌面 + 系统界面），重启对应应用后生效。"
+            echo "      APK installed successfully."
+            echo "      Note: First time you need to enable the module in LSPosed Manager and check"
+            echo "            scope (HONOR Launcher + SystemUI), then restart the app to take effect."
             ;;
         *)
-            echo "      已跳过桌面修改安装。"
+            echo "      Skipped launcher mods installation."
             ;;
     esac
 }
 
-# ---------- 5/5 运行 ----------
-echo "[5/5] 开始 per-boot 提权（W1 - W2 - KSU 晚加载）"
-echo "      * 全自动运行，含多次设备重启，可能耗时较长"
-echo "      * 请勿关闭本窗口；勿同时运行其他 grind"
-echo "      * 成功后脚本自动停止"
+# ---------- 5/5 Run ----------
+echo "[5/5] Starting per-boot root (W1 - W2 - KSU late-load)"
+echo "      * Fully automatic, includes multiple device reboots, may take a long time"
+echo "      * Do not close this window; do not run other grinds simultaneously"
+echo "      * Script stops automatically on success"
 echo
 bash "root/host-scripts/run_forever.sh"
 echo
 
-# root 落地后 detached chain_hook 还需数十秒完成 KSU 晚加载，
-# 立即检查 /proc/modules 会误报失败——轮询等待（最长 180 秒），
-# 期间实时增量显示设备端 chain_status / chain.log（wait_ksu.sh）。
+# After root lands, detached chain_hook still needs tens of seconds to complete
+# KSU late-load; checking /proc/modules immediately may falsely report failure.
+# Poll and wait (max 180s), showing device-side chain_status / chain.log
+# incrementally (wait_ksu.sh).
 KSU_UP=0
 if bash "root/host-scripts/wait_ksu.sh"; then KSU_UP=1; fi
 ensure_module
 if [ "$KSU_UP" = "1" ]; then
     echo "=================================================="
-    echo "   [成功] KernelSU 已加载，临时 root 就绪！"
+    echo "   [SUCCESS] KernelSU loaded, temporary root ready!"
     echo "=================================================="
-    # 自动安装管理器: KernelSU 管理器 + ZygiskNext + LSPosed(内嵌管理器)
-    echo "      --- 自动安装 KSU / LSP 管理器 ---"
+    # Auto-install managers: KernelSU Manager + ZygiskNext + LSPosed (embedded manager)
+    echo "      --- Auto-installing KSU / LSP managers ---"
     bash "root/host-scripts/install_managers.sh"
-    # Zygisk/LSPosed 注入激活（链后时机，12:40 已验证配方；链内跑会破坏模块）
+    # Zygisk/LSPosed injection activation (post-chain timing, verified recipe at 12:40;
+    # running inside chain would break modules)
     bash "root/host-scripts/activate_zygisk.sh"
     install_launcher_mods
 else
     echo "=================================================="
-    echo "   [未成功] 本次 grind 未落地，可重新运行再试。"
+    echo "   [FAILED] This grind did not land, you can rerun and try again."
     echo "=================================================="
 fi
 echo
-read -p "按回车键退出..."
+read -p "Press Enter to exit..."
