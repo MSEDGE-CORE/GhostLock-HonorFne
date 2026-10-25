@@ -11,6 +11,14 @@
 cd "$(dirname "$0")/../.." || exit 1
 T30=""; T180=""
 command -v timeout >/dev/null 2>&1 && { T30="timeout 30"; T180="timeout 180"; }
+# MSYS2/Git Bash 路径转换防护: 本脚本在 Git Bash 下运行时, 裸 /data push
+# 目标会被 MSYS 层转成 "C:\Program Files\Git\data\..." 传给原生 adb
+# (Win T480 实测: "remote secure_mkdirs failed", 两个模块中转推送全挂;
+# adb shell "..." 引号整串不受影响, 故仅此一处)。排除 /data 前缀的
+# 转换; mac/Linux 无此机制, 不受影响。
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) export MSYS2_ARG_CONV_EXCL="/data" ;;
+esac
 DEPLOY=deploy
 
 # --- 1. KernelSU 管理器 APK ---
