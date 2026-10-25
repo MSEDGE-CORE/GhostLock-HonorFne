@@ -455,6 +455,10 @@ private fun SettingsScreen() {
                             subtitle = "禁用系统自动更新服务（需ROOT权限）",
                             pkg = "com.hihonor.ouc"
                         )
+                        SettingsSwitchItem(ToggleRow(
+                            "阻止日历课程表闪退", "阻止日历课程表在8.0.221因NoSuchMethodError而闪退",
+                            Port.KEY_CALENDAR_COURSE_FIX
+                        ), true)
                     }
                 }
                 }

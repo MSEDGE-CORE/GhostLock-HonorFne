@@ -49,6 +49,7 @@ public final class Port {
     public static final String KEY_FF_GESTURE = "hn_port_ff_gesture"; // 1 = 悬浮窗手势优化: 底部上滑挂起(不进圆球) + 拖窗贴边最小化(替换横滑甩动判定)
     public static final String KEY_FF_ANIM = "hn_port_ff_anim"; // 1 = 悬浮窗动效优化: 最小化/挂起 spring(ζ=0.89, 初速度) + 全屏过渡 live 起播连贯
     public static final String KEY_CC_STATUSBAR_CONTINUITY = "hn_port_cc_statusbar_continuity"; // 1 = 状态栏连贯: 进入控制中心/通知中心时状态栏随下拉跟手移动 (V17)
+    public static final String KEY_CALENDAR_COURSE_FIX = "hn_port_calendar_course_fix"; // 1 = 阻止日历课程表闪退 (吞 NoSuchMethodError)
     public static final String KEY_ADV_UNLOCK_SCALE = "hn_port_adv_unlock_scale"; // float = 自定义解锁动画起始尺寸 (0.5-4), 未设置(NaN) = stock
     public static final String KEY_ADV_UNLOCK_ANCHOR = "hn_port_adv_unlock_anchor"; // float = 自定义解锁动画缩放锚点 (0-1 屏高比例), 默认 0.3
     public static final String KEY_ADV_UNLOCK_DELAY = "hn_port_adv_unlock_delay"; // float = 自定义解锁动画分组透明度延时 (0-60ms), 未设置(NaN) = stock(30ms)

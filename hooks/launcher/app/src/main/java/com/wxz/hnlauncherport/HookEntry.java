@@ -7,6 +7,7 @@ public class HookEntry implements IXposedHookLoadPackage {
     private static final String LAUNCHER_PKG = "com.hihonor.android.launcher";
     private static final String AOD_PKG = "com.hihonor.aod";
     private static final String SYSTEMUI_PKG = "com.android.systemui";
+    private static final String CALENDAR_PKG = "com.hihonor.calendar";
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
@@ -40,6 +41,15 @@ public class HookEntry implements IXposedHookLoadPackage {
                 com.wxz.hnlauncherport.systemui.StatusBarContinuity.install(lpparam.classLoader);
             } catch (Throwable t) {
                 Port.log("StatusBarContinuity install failed", t);
+            }
+            return;
+        }
+        if (CALENDAR_PKG.equals(lpparam.packageName)) {
+            Port.log("loaded in calendar process=" + lpparam.processName);
+            try {
+                com.wxz.hnlauncherport.calendar.CalendarFix.install(lpparam.classLoader);
+            } catch (Throwable t) {
+                Port.log("CalendarFix install failed", t);
             }
             return;
         }
