@@ -657,8 +657,15 @@ public final class SystemUIHooks {
         // 本模块单击亮屏 (AodHooks 反射 wakeUp) 缺少该调用, 人脸不启动.
         // 在 handleStartedWakingUp 后检查 WakeUpReason, 若来自本模块则补调
         // faceDetectWithWakingUp, 复用电源键 reason 使 isDetectByPower() 成立.
+        // WakeUpReason 由 system_server 在 wakeUpInternal 时经 settings provider
+        // 写入, 与本回调派发是并发 binder 链, SystemUI 侧 Settings.Global
+        // 读缓存可能仍是旧值 (~7% 概率读到过期值导致人脸不启动).
+        // 故读取不匹配时按 50/150/300ms 重试, 命中即补调.
         final Class<?> kumCls = XposedHelpers.findClass(
                 "com.android.keyguard.KeyguardUpdateMonitor", cl);
+        final android.os.Handler faceRetryHandler = new android.os.Handler(
+                android.os.Looper.getMainLooper());
+        final long[] faceRetryDelays = new long[]{50L, 150L, 300L};
         XposedHelpers.findAndHookMethod(kumCls, "handleStartedWakingUp", new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) throws Throwable {
@@ -666,17 +673,8 @@ public final class SystemUIHooks {
                     if (!Port.on(Port.KEY_KG_SINGLE_TAP_WAKE)) {
                         return;
                     }
-                    android.content.Context ctx = (android.content.Context)
-                            XposedHelpers.getObjectField(param.thisObject, "mContext");
-                    String wakeReason = android.provider.Settings.Global.getString(
-                            ctx.getContentResolver(), "WakeUpReason");
-                    if (wakeReason == null
-                            || !wakeReason.startsWith("HnPort SINGLE_TAP_WAKE")) {
-                        return;
-                    }
-                    XposedHelpers.callMethod(param.thisObject,
-                            "faceDetectWithWakingUp", "FCDT-POWERKEY");
-                    Port.log("SystemUIHooks: face detect after single tap wake");
+                    tryFaceDetectAfterTapWake(param.thisObject, 0,
+                            faceRetryHandler, faceRetryDelays);
                 } catch (Throwable t) {
                     Port.log("SystemUIHooks: face detect after tap wake failed", t);
                 }
@@ -820,6 +818,40 @@ public final class SystemUIHooks {
         FreeformFx.install(cl);
 
         Port.log("SystemUIHooks installed");
+    }
+
+    /**
+     * 单击亮屏后补启人脸检测 (含 WakeUpReason 读取重试).
+     * Settings.Global "WakeUpReason" 的写入 (system_server) 与本侧读取
+     * 存在缓存竞态, 首读可能为旧值; 未命中时按 delays[attempts] 延迟重试.
+     * 命中后调用 KeyguardUpdateMonitor.faceDetectWithWakingUp("FCDT-POWERKEY").
+     */
+    private static void tryFaceDetectAfterTapWake(final Object updateMonitor,
+            final int attempts, final android.os.Handler handler, final long[] delays) {
+        try {
+            android.content.Context ctx = (android.content.Context)
+                    XposedHelpers.getObjectField(updateMonitor, "mContext");
+            String wakeReason = android.provider.Settings.Global.getString(
+                    ctx.getContentResolver(), "WakeUpReason");
+            if (wakeReason != null && wakeReason.startsWith("HnPort SINGLE_TAP_WAKE")) {
+                XposedHelpers.callMethod(updateMonitor,
+                        "faceDetectWithWakingUp", "FCDT-POWERKEY");
+                Port.log("SystemUIHooks: face detect after single tap wake (try " + attempts + ")");
+                return;
+            }
+            if (attempts < delays.length) {
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        tryFaceDetectAfterTapWake(updateMonitor, attempts + 1, handler, delays);
+                    }
+                }, delays[attempts]);
+                return;
+            }
+            Port.log("SystemUIHooks: tap wake reason not seen after " + attempts + " tries");
+        } catch (Throwable t) {
+            Port.log("SystemUIHooks: face detect after tap wake failed", t);
+        }
     }
 
     /** 关闭动画 scaleX/scaleY 末值改 1.0 (续接时初值=当前 scale, 否则 1.0). */
