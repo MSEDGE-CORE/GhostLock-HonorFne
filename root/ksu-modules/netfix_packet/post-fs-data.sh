@@ -18,9 +18,17 @@ ts() { date '+%m-%d %H:%M:%S'; }
 # ksud 合并会用 MU 重建 modules 树——MU 不补丁则重建后补丁被覆盖,
 # grind_reboot8 实测 12:38:04 补丁被 [1/4] 于 12:38:08 用未补丁 MU 覆盖）。
 for LSPD in /data/adb/modules/zygisk_lsposed/daemon /data/adb/modules_update/zygisk_lsposed/daemon; do
-    if [ -f "$LSPD" ] && grep -q '^mount tmpfs -t tmpfs /data/resource-cache' "$LSPD"; then
-        sed -i 's|^mount tmpfs -t tmpfs /data/resource-cache|[netfix_packet] patched: stacked tmpfs shadows all RRO idmaps|' "$LSPD" \
-            && echo "$(ts) post-fs-data: patched $LSPD (tmpfs on /data/resource-cache)" >> "$LOG"
+    if [ -f "$LSPD" ]; then
+        # 旧版补丁曾把 mount 行替换成裸文本 "[netfix_packet] patched: ..."
+        # (shell 每次执行到报 command not found), 先修复为注释行
+        if grep -q '^\[netfix_packet\] patched:' "$LSPD"; then
+            sed -i 's|^\[netfix_packet\] patched:|# [netfix_packet] patched:|' "$LSPD" \
+                && echo "$(ts) post-fs-data: fixed bare-text patch line in $LSPD" >> "$LOG"
+        fi
+        if grep -q '^mount tmpfs -t tmpfs /data/resource-cache' "$LSPD"; then
+            sed -i 's|^mount tmpfs -t tmpfs /data/resource-cache|# [netfix_packet] patched: stacked tmpfs shadows all RRO idmaps|' "$LSPD" \
+                && echo "$(ts) post-fs-data: patched $LSPD (tmpfs on /data/resource-cache)" >> "$LOG"
+        fi
     fi
 done
 

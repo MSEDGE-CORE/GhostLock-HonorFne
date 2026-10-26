@@ -8,9 +8,16 @@ ts() { date '+%m-%d %H:%M:%S'; }
 
 # 补丁两份副本（modules + modules_update），理由同 post-fs-data.sh。
 for LSPD in /data/adb/modules/zygisk_lsposed/daemon /data/adb/modules_update/zygisk_lsposed/daemon; do
-    if [ -f "$LSPD" ] && grep -q '^mount tmpfs -t tmpfs /data/resource-cache' "$LSPD"; then
-        sed -i 's|^mount tmpfs -t tmpfs /data/resource-cache|[netfix_packet] patched: stacked tmpfs shadows all RRO idmaps|' "$LSPD" \
-            && echo "$(ts) service: patched $LSPD (tmpfs on /data/resource-cache)" >> "$LOG"
+    if [ -f "$LSPD" ]; then
+        # 旧版补丁曾把 mount 行替换成裸文本, 先修复为注释行(同 post-fs-data.sh)
+        if grep -q '^\[netfix_packet\] patched:' "$LSPD"; then
+            sed -i 's|^\[netfix_packet\] patched:|# [netfix_packet] patched:|' "$LSPD" \
+                && echo "$(ts) service: fixed bare-text patch line in $LSPD" >> "$LOG"
+        fi
+        if grep -q '^mount tmpfs -t tmpfs /data/resource-cache' "$LSPD"; then
+            sed -i 's|^mount tmpfs -t tmpfs /data/resource-cache|# [netfix_packet] patched: stacked tmpfs shadows all RRO idmaps|' "$LSPD" \
+                && echo "$(ts) service: patched $LSPD (tmpfs on /data/resource-cache)" >> "$LOG"
+        fi
     fi
 done
 
