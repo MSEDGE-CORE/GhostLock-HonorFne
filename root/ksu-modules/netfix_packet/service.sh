@@ -30,8 +30,7 @@ while grep -q " /data/resource-cache " /proc/1/mountinfo 2>/dev/null; do
 done
 [ "$n" -gt 0 ] && echo "$(ts) service: unmounted $n stacked tmpfs on /data/resource-cache" >> "$LOG"
 
-if [ "$(getprop init.svc.idmap2d)" != "running" ]; then
-    setprop ctl.start idmap2d 2>/dev/null \
-        && echo "$(ts) service: (re)started idmap2d" >> "$LOG"
-fi
+# idmap2d 拉起已移除: setprop ctl.start idmap2d 在 exploit 后的 init 上
+# 间歇性挂死(install_managers 重打段实测卡 600s 超时, 且疑似诱发整机
+# 重启); idmap2d 非必需, RRO idmap 走 idmap2 按需生成路径。
 exit 0
