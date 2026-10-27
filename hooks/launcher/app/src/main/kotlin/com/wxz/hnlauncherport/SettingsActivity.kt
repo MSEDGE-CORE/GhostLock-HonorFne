@@ -191,7 +191,7 @@ private fun SettingsScreen() {
         ToggleRow("锚点优化", "窗口向0.2移动缩小", Port.KEY_WIN_SCALE),
         ToggleRow("连续切换应用", "立即停止上一个窗口", Port.KEY_PARALLEL),
         ToggleRow("高级模糊", "启用高端机型的模糊效果，优化部分速率曲线", Port.KEY_BLUR),
-        ToggleRow("高级解锁动画...", "分组扩散，渐进弹簧（需重启桌面）", Port.KEY_ADV_UNLOCK_ANIM)
+        ToggleRow("高级图标入场...", "分组扩散，渐进弹簧（需重启桌面）", Port.KEY_ADV_UNLOCK_ANIM)
     ) }
     // 手势与行为
     val gestureRows = remember { listOf(
