@@ -108,6 +108,19 @@ echo "      安装 KSU 模块（ZygiskNext / LSPosed，官方安装流程）..."
 install_mod "$DEPLOY/ZygiskNext.zip"
 install_mod "$DEPLOY/LSPosed-zygisk.zip"
 
+# --- 2.5 netfix_packet 模块同步（兜底） ---
+# 一键脚本(run_root.*)有 ensure_module, 但手动 grind/单独跑本脚本时
+# netfix 可能尚未安装(全新设备/清理后), 下面的补丁重打会因模块缺失而
+# 跳过。无条件合并同步(与 run_root.command ensure_module 同规则)。
+echo "      同步 netfix_packet 模块..."
+$T30 adb shell "rm -rf /data/local/tmp/netfix_packet" >/dev/null 2>&1
+if $T180 adb push root/ksu-modules/netfix_packet /data/local/tmp/ >/dev/null 2>&1 \
+   && $T30 adb shell "su 0 sh -c 'mkdir -p /data/adb/modules/netfix_packet && cp -rf /data/local/tmp/netfix_packet/. /data/adb/modules/netfix_packet/'" >/dev/null 2>&1; then
+    echo "      netfix_packet 模块已同步（网络/RRO/状态栏/导航栏/AOD 修复）"
+else
+    echo "      [警告] netfix_packet 模块同步失败"
+fi
+
 # --- 3. 安装后重打 netfix RRO 补丁 ---
 # 模块安装会把 zygisk_lsposed/daemon 重置为未打补丁版本(内含
 # `mount tmpfs /data/resource-cache`, 会把全部 RRO idmap 遮成

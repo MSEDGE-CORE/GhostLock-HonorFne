@@ -40,6 +40,11 @@
 cd "$(dirname "$0")/../.." || exit 1
 T15=""; T30=""
 command -v timeout >/dev/null 2>&1 && { T15="timeout 15"; T30="timeout 30"; }
+# MSYS2/Git Bash 路径转换防护(与 install_managers.sh 同规则): 裸 /data
+# push 目标会被 MSYS 层转成 Windows 路径传给原生 adb; mac/Linux 不受影响。
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) export MSYS2_ARG_CONV_EXCL="/data" ;;
+esac
 MOD=/data/adb/modules/zygisksu
 
 # 设备端解析 magiskpolicy 路径(chain 部署目录)
@@ -177,6 +182,64 @@ if [ $ok -eq 1 ]; then
     $T30 adb shell "su 0 sh -c 'for r in /data/adb/modules/*/sepolicy.rule; do [ -f \"\$r\" ] && $MP --apply \"\$r\" 2>/dev/null; done'" >/dev/null 2>&1
     echo "      Zygisk 注入成功: zygote 已加载 LSPosed zygisk 模块"
     echo "      (lspd 日志: /data/adb/lspd/log/ ; LSPosed 入口在通知栏)"
+
+    # --- LSPosed 作用域补齐 ---
+    # 全新 lspd(配置被清/首次激活)不会自动发现 Xposed 模块: system_server
+    # 被 LSPosed zygisk 默认跳过(bridge 模式), 无包管理 hook 触发扫描,
+    # modules/scope 表全空 → 模块 hook 永不加载(10/27 两轮 grind 实测)。
+    # 经 /data/local/tmp 中转拉取 modules_config.db, 本机 sqlite3 补写
+    # 模块注册 + 作用域(等价管理器内启用并勾选作用域), 重启 lspd 生效。
+    DB=/data/adb/lspd/config/modules_config.db
+    STG=/data/local/tmp/.gl_lsp_db
+    n=0
+    while [ $n -lt 12 ] && ! $T15 adb shell "su 0 test -f $DB" >/dev/null 2>&1; do
+        sleep 5; n=$((n+1))
+    done
+    if ! command -v sqlite3 >/dev/null 2>&1; then
+        echo "      [提示] 本机无 sqlite3, 跳过 LSPosed 作用域自动补齐"
+        echo "            (请在 LSPosed 管理器启用 HnLauncherPort 并勾选作用域)"
+    elif ! $T15 adb shell "su 0 test -f $DB" >/dev/null 2>&1; then
+        echo "      [提示] lspd 配置 db 未就绪, 跳过作用域补齐"
+    else
+        W=$(mktemp -d)
+        $T30 adb shell "su 0 sh -c 'cp $DB $STG; cp $DB-wal $STG-wal 2>/dev/null; cp $DB-shm $STG-shm 2>/dev/null; chmod 666 $STG*'" >/dev/null 2>&1
+        adb pull $STG "$W/db" >/dev/null 2>&1
+        adb pull $STG-wal "$W/db-wal" >/dev/null 2>&1
+        adb pull $STG-shm "$W/db-shm" >/dev/null 2>&1
+        APK=$($T15 adb shell "pm path com.wxz.hnlauncherport" 2>/dev/null | tr -d '\r' | head -1 | sed 's/^package://')
+        if [ ! -s "$W/db" ] || [ -z "$APK" ]; then
+            echo "      [提示] db 拉取失败或 HnLauncherPort 未安装, 跳过作用域补齐"
+        else
+            # wal 回放进主文件, 后续只写回 db 本体(设备端删 wal/shm)
+            sqlite3 "$W/db" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>&1
+            EMID=$(sqlite3 "$W/db" "SELECT mid FROM modules WHERE module_pkg_name='com.wxz.hnlauncherport' AND enabled=1;" 2>/dev/null)
+            NSC=0
+            [ -n "$EMID" ] && NSC=$(sqlite3 "$W/db" "SELECT count(*) FROM scope WHERE mid=$EMID AND app_pkg_name IN ('com.hihonor.android.launcher','com.hihonor.aod','com.android.systemui');" 2>/dev/null)
+            if [ -n "$EMID" ] && [ "$NSC" = "3" ]; then
+                echo "      LSPosed 作用域已配置(HnLauncherPort), 无需补齐"
+            else
+                sqlite3 "$W/db" "INSERT INTO modules(module_pkg_name,apk_path,enabled) VALUES('com.wxz.hnlauncherport','$APK',1) ON CONFLICT(module_pkg_name) DO UPDATE SET apk_path=excluded.apk_path, enabled=1; PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>&1
+                MID=$(sqlite3 "$W/db" "SELECT mid FROM modules WHERE module_pkg_name='com.wxz.hnlauncherport';" 2>/dev/null)
+                if [ -n "$MID" ] \
+                   && sqlite3 "$W/db" "INSERT OR IGNORE INTO scope VALUES($MID,'com.hihonor.android.launcher',0); INSERT OR IGNORE INTO scope VALUES($MID,'com.hihonor.aod',0); INSERT OR IGNORE INTO scope VALUES($MID,'com.android.systemui',0); PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>&1 \
+                   && adb push "$W/db" $STG >/dev/null 2>&1; then
+                    # kill lspd(comm=main, 须按 cmdline 匹配 pgrep -f) → 备份
+                    # 旧 db → 写回(删旧 wal/shm 防回放覆盖) → service.sh 重启 lspd
+                    $T30 adb shell "su 0 sh -c 'cp $DB $DB.glbak 2>/dev/null; kill \$(pgrep -f \"^lspd\$\") 2>/dev/null; sleep 1; cp $STG $DB; rm -f $DB-wal $DB-shm; chmod 666 $DB; rm -f $STG $STG-wal $STG-shm; sh /data/adb/modules/zygisk_lsposed/service.sh'" >/dev/null 2>&1
+                    # 等 lspd 回来, 再重启作用域进程让 hook 立即生效
+                    n=0
+                    while [ $n -lt 12 ] && ! $T15 adb shell "su 0 sh -c 'pgrep -f \"^lspd\$\" >/dev/null'" >/dev/null 2>&1; do
+                        sleep 5; n=$((n+1))
+                    done
+                    $T30 adb shell "su 0 am force-stop com.hihonor.android.launcher; su 0 am force-stop com.hihonor.aod" >/dev/null 2>&1
+                    echo "      LSPosed 作用域已补齐并重启 lspd (HnLauncherPort -> Launcher/AOD/SystemUI)"
+                else
+                    echo "      [警告] 作用域补齐失败, 请在 LSPosed 管理器手动启用模块并勾选作用域"
+                fi
+            fi
+        fi
+        rm -rf "$W"
+    fi
     exit 0
 else
     echo "      [警告] 注入未确认。诊断信息:"
