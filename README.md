@@ -75,4 +75,4 @@ post-fs-data.sh + service.sh 补丁 daemon 的 mount 行 + 清理已叠层 + 保
 ## 许可证
 
 - `exploit/`：**Apache License 2.0**（见[LICENSE](LICENSE)）
-- `ksu/`：**GPL-2.0**（见[ksu/LICENSE](ksu/LICENSE)）
+- `ksu/`：**GPL-2.0**（见[KernelSU/LICENSE](https://github.com/tiann/KernelSU/LICENSE)）
