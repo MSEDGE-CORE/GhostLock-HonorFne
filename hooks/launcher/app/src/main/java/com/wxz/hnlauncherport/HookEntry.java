@@ -83,6 +83,11 @@ public class HookEntry implements IXposedHookLoadPackage {
             Port.log("KeepHiboardReturn install failed", t);
         }
         try {
+            com.wxz.hnlauncherport.hiboard.HiboardSink.install(lpparam.classLoader);
+        } catch (Throwable t) {
+            Port.log("HiboardSink install failed", t);
+        }
+        try {
             com.wxz.hnlauncherport.onestep.OneStepThresholds.install(lpparam.classLoader);
         } catch (Throwable t) {
             Port.log("OneStepThresholds install failed", t);

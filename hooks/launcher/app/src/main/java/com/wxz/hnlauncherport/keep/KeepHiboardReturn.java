@@ -234,46 +234,48 @@ public final class KeepHiboardReturn {
 
         Class<?> exitAnimCls = XposedHelpers.findClass(EXIT_ANIM_CLS, cl);
 
-        // 返回资源库 (HiLibrary) 时的返家动画目标: stock 的 shouldDoExitAni
-        // (ProviderCallUtils:1988) 见 isHiboardShowing() 直接返回 false,
-        // deliverExitAppData / findExitAppAnimation 整个被跳过, 上面那个
+        // 返回负一屏/资源库 (HiBoard/HiLibrary) 时的返家动画目标: stock 的
+        // shouldDoExitAni (ProviderCallUtils:1988) 见 isHiboardShowing() 直接返回
+        // false, deliverExitAppData / findExitAppAnimation 整个被跳过, 上面那个
         // after-hook 钩子成为死代码; returnHomeWithAnimation:727 读到的因此
         // 是上一次 (回桌面/开应用) 留下的陈旧 mAnimationInfo -> 应用缩向桌面
         // 图标. 在 returnHomeWithAnimation 入口清空 mAnimationInfo, 令 :740
         // isNeedReturnHomeWindowAnim(null) = true -> returnHomeWindowAnim ->
         // getDefaultToRectF 的 0.3 无图标默认路径 (与无桌面图标应用同一条路).
+        // 落点是负一屏或资源库, 缩向桌面图标都不对, 两类统一走默认路径.
         XposedHelpers.findAndHookMethod(exCls, "returnHomeWithAnimation",
                 float.class, new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        if (!keepEnabled() || !sFromHiboard || sLastOpenType != 2) {
+                        if (!keepEnabled() || !sFromHiboard) {
                             return;
                         }
                         try {
                             Object mgr = XposedHelpers.callStaticMethod(exitAnimCls, "getInstance");
                             XposedHelpers.callMethod(mgr, "clearAnimationInfo");
-                            Port.log("KeepHiboardReturn: clear return-anim target -> default (HiLibrary)");
+                            Port.log("KeepHiboardReturn: clear return-anim target -> default (type "
+                                    + sLastOpenType + ")");
                         } catch (Throwable t) {
                             Port.log("KeepHiboardReturn clear target failed", t);
                         }
                     }
                 });
 
-        // 返回资源库 (HiLibrary) 时刷新返家动画目标: 清掉 findExitAppAnimation
-        // 查到的桌面图标 (deliverExitAppData 是每个返家手势的目标刷新总入口,
-        // 先置空再重查), 令 getToRectF(null) 走 getDefaultToRectF 的 0.3 无图标
-        // 默认路径 - 与无桌面图标应用完全同一条路 (无浮动图标, isReturnToIcon
-        // 为 false).
+        // 返回负一屏/资源库 (HiBoard/HiLibrary) 时刷新返家动画目标: 清掉
+        // findExitAppAnimation 查到的桌面图标 (deliverExitAppData 是每个返家
+        // 手势的目标刷新总入口, 先置空再重查), 令 getToRectF(null) 走
+        // getDefaultToRectF 的 0.3 无图标默认路径 - 与无桌面图标应用完全同一条路
+        // (无浮动图标, isReturnToIcon 为 false).
         XposedHelpers.findAndHookMethod(exitAnimCls, "findExitAppAnimation",
                 boolean.class, new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                         boolean keep = keepEnabled();
                         boolean from = sFromHiboard;
-                        boolean lib = sLastOpenType == 2;
-                        if (keep && from && lib) {
+                        if (keep && from) {
                             XposedHelpers.callMethod(param.thisObject, "clearAnimationInfo");
-                            Port.log("KeepHiboardReturn: refresh return-anim target -> default (HiLibrary)");
+                            Port.log("KeepHiboardReturn: refresh return-anim target -> default (type "
+                                    + sLastOpenType + ")");
                         } else {
                             Port.log("KeepHiboardReturn: animTarget keep=" + keep
                                     + " from=" + from + " type=" + sLastOpenType);

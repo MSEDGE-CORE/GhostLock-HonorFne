@@ -24,6 +24,7 @@ public final class Port {
     public static final String KEY_ICON_HIDE = "hn_port_icon_hide"; // 1 = hide launching icon during app-open anim (large-folder fix)
     public static final String KEY_WIN_SCALE = "hn_port_win_scale"; // 1 = V17-style swipe-up window trajectory (converge toward W/2, 0.3H)
     public static final String KEY_KEEP_HIBOARD = "hn_port_keep_hiboard"; // 1 = 返家保持负一屏/资源库, 进后台才退出
+    public static final String KEY_HIBOARD_SINK = "hn_port_hiboard_sink"; // 1 = 进入负一屏时桌面下沉 (缩小+淡出, 资源库同款)
     public static final String KEY_ONESTEP_THRESHOLD = "hn_port_onestep_threshold"; // 1 = swipe小窗/分屏阈值 0.8/0.75 横0.3H竖0.5H, 松手需停顿
     public static final String KEY_ONESTEP_PX = "hn_port_onestep_px"; // float = 竖屏椭圆热区横半轴比例 (0.1-0.5, 默认 0.4)
     public static final String KEY_ONESTEP_PY = "hn_port_onestep_py"; // float = 竖屏椭圆热区纵半轴比例 (0.1-0.6, 默认 0.55)

@@ -199,6 +199,8 @@ private fun SettingsScreen() {
             Port.KEY_ONESTEP_THRESHOLD),
         ToggleRow("负一屏/资源库保持", "手势返回不自动退出负一屏/资源库",
             Port.KEY_KEEP_HIBOARD),
+        ToggleRow("负一屏层级", "进入负一屏时桌面下沉",
+            Port.KEY_HIBOARD_SINK),
         ToggleRow("禁用图标上滑卡片", "建议同时关闭卡片提示条",
             Port.KEY_DISABLE_ICON_CARD)
     ) }
