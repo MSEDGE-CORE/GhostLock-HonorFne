@@ -201,6 +201,10 @@ if [ $ok -eq 1 ]; then
     elif ! $T15 adb shell "su 0 test -f $DB" >/dev/null 2>&1; then
         echo "      [提示] lspd 配置 db 未就绪, 跳过作用域补齐"
     else
+        # 注入刚完成设备处于忙态(ZN/lspd/sepolicy 并发初始化), adb
+        # sync/pm 瞬态空响应(round1/2 内嵌实测两轮稳定失败, 手动静息
+        # 态必成功) —— 先等 15s 静息再拉取。
+        sleep 15
         W=$(mktemp -d)
         # pull 瞬态失败重试(注入刚完成时 adb/lspd 初始化期偶发空结果)
         pull_retry() { # $1=device path $2=local path
@@ -215,7 +219,12 @@ if [ $ok -eq 1 ]; then
         pull_retry $STG "$W/db"
         pull_retry $STG-wal "$W/db-wal"
         pull_retry $STG-shm "$W/db-shm"
-        APK=$($T15 adb shell "pm path com.wxz.hnlauncherport" 2>/dev/null | tr -d '\r' | head -1 | sed 's/^package://')
+        APK=""
+        for i in 1 2 3; do
+            APK=$($T15 adb shell "pm path com.wxz.hnlauncherport" 2>/dev/null | tr -d '\r' | head -1 | sed 's/^package://')
+            [ -n "$APK" ] && break
+            sleep 3
+        done
         if [ ! -s "$W/db" ] || [ -z "$APK" ]; then
             echo "      [提示] db 拉取失败或 HnLauncherPort 未安装, 跳过作用域补齐"
         else
