@@ -49,11 +49,11 @@ GhostLock-HonorFne/
 ### Netfix_packet 模块（网络/状态栏/导航栏/AOD 修复）
 修复 ROOT 过程引入的两个独立问题：
 
-1. **网络断流 / hwservice 被拒** 
+1. **网络断流 / hwservice 被拒**    
 16 行 sepolicy.rule，随 ksud late-load 注入。
 修复 magiskpolicy 重载后 netdev SID 变 unlabeled，vendor service find 被拒。
 
-2. **状态栏导航栏错位 / AOD 失效** 
+2. **状态栏导航栏错位 / AOD 失效**    
 post-fs-data.sh + service.sh 补丁 daemon 的 mount 行 + 清理已叠层 + 保活 idmap2d。
 防止 LSPosed daemon 每次启动 mount tmpfs /data/resource-cache（单 boot 叠 67+ 层），遮蔽全部 RRO。
 
