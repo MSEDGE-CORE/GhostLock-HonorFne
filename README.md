@@ -50,16 +50,18 @@ GhostLock-HonorFne/
 修复 ROOT 过程引入的两个独立问题：
 
 1. **网络断流 / hwservice 被拒**    
-16 行 sepolicy.rule，随 ksud late-load 注入。
+16 行 sepolicy.rule，随 ksud late-load 注入。    
 修复 magiskpolicy 重载后 netdev SID 变 unlabeled，vendor service find 被拒。
 
 2. **状态栏导航栏错位 / AOD 失效**    
-post-fs-data.sh + service.sh 补丁 daemon 的 mount 行 + 清理已叠层 + 保活 idmap2d。
+post-fs-data.sh + service.sh 补丁 daemon 的 mount 行 + 清理已叠层 + 保活 idmap2d。    
 防止 LSPosed daemon 每次启动 mount tmpfs /data/resource-cache（单 boot 叠 67+ 层），遮蔽全部 RRO。
 
 
 ### 耀衍（桌面/SystemUI hook）
-- 项目目录 & APK：/hooks/Launcher/ & /hooks/Launcher/out/HnLauncherPort.apk 
+- 项目目录 & APK：
+`/hooks/Launcher/` 
+`/hooks/Launcher/out/HnLauncherPort.apk`
 
 - **启用高级动效**  高级模糊、图标入场、状态栏连贯
 - **重构惯性模型**  桌面应用手势惯性、控制中心横向切换
