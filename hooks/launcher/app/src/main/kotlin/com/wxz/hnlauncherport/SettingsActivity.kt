@@ -661,7 +661,7 @@ private fun UnlockAnimDialog(onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("高级解锁动画")
+                Text("高级图标入场")
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = {
                     scale = 1.8f
