@@ -59,7 +59,7 @@ public final class LaunchSpringTune {
                     return;
                 }
                 try {
-                    Object spring = CurveDemoSpring.make(cl, CurveDemoSpring.ZETA_XY,
+                    Object spring = CurveDemoSpring.make(cl, CurveDemoSpring.zetaXY(),
                             1.0f, 0.0f, 0.001f);
                     if (spring != null) {
                         param.setResult(spring);
@@ -102,7 +102,7 @@ public final class LaunchSpringTune {
             return;
         }
         try {
-            Object spring = CurveDemoSpring.make(cl, CurveDemoSpring.ZETA_XY,
+            Object spring = CurveDemoSpring.make(cl, CurveDemoSpring.zetaXY(),
                     1.0f, 0.0f, 0.001f);
             if (spring == null) {
                 return;

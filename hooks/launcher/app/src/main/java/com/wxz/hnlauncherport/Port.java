@@ -20,6 +20,12 @@ public final class Port {
     // Feature switches (Settings.Global, readable by launcher process)
     public static final String KEY_MOTION = "hn_port_motion";       // 1 = MotionEngine-style return home
     public static final String KEY_MOTION_PATH = "hn_port_motion_path"; // 1 = CurveDemo analytic spring (slot 0 params, default duration)
+    // 曲线自定义 (运动路径优化开时 MotionPathDialog 配置):
+    public static final String KEY_MP_DURATION = "hn_port_mp_duration";     // float 时长系数 0.8-1.5, 默认 1.0 (T = 0.9s * 系数)
+    public static final String KEY_MP_INERTIA = "hn_port_mp_inertia";       // float 惯性系数 0-10, 默认 1 (v0 乘子)
+    public static final String KEY_MP_ZETA_XY = "hn_port_mp_zeta_xy";       // float 平移弹簧 zeta 0.5-1.5, 默认 0.86
+    public static final String KEY_MP_ZETA_SCALE = "hn_port_mp_zeta_scale"; // float 缩放弹簧 zeta 0.5-1.5, 默认 0.86
+    public static final String KEY_MP_ZETA_WH = "hn_port_mp_zeta_wh";       // float 宽高弹簧 zeta 0.5-1.5, 默认 0.9
     public static final String KEY_PARALLEL = "hn_port_parallel";   // 1 = 连续切换应用: click new icon kills prev app anim immediately + canBreak bypass
     public static final String KEY_BLUR = "hn_port_blur";           // 1 = force transition blur on all models
     public static final String KEY_ICON_HIDE = "hn_port_icon_hide"; // 1 = hide launching icon during app-open anim (large-folder fix)

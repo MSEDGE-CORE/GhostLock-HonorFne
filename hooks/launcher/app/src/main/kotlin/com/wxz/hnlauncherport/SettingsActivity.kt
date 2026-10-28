@@ -649,47 +649,151 @@ private fun SettingsSwitchItem(
 private fun MotionPathDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
     var pathOn by remember { mutableStateOf(readKey(context, Port.KEY_MOTION_PATH)) }
+    var dur by remember {
+        mutableFloatStateOf(
+            Settings.Global.getFloat(
+                context.contentResolver, Port.KEY_MP_DURATION, 1.0f).coerceIn(0.8f, 1.5f))
+    }
+    var inertia by remember {
+        mutableFloatStateOf(
+            Settings.Global.getFloat(
+                context.contentResolver, Port.KEY_MP_INERTIA, 1f).coerceIn(0f, 10f))
+    }
+    var zetaXY by remember {
+        mutableFloatStateOf(
+            Settings.Global.getFloat(
+                context.contentResolver, Port.KEY_MP_ZETA_XY, 0.86f).coerceIn(0.5f, 1.5f))
+    }
+    var zetaScale by remember {
+        mutableFloatStateOf(
+            Settings.Global.getFloat(
+                context.contentResolver, Port.KEY_MP_ZETA_SCALE, 0.86f).coerceIn(0.5f, 1.5f))
+    }
+    var zetaWH by remember {
+        mutableFloatStateOf(
+            Settings.Global.getFloat(
+                context.contentResolver, Port.KEY_MP_ZETA_WH, 0.9f).coerceIn(0.5f, 1.5f))
+    }
+
+    fun putF(key: String, v: Float): Boolean {
+        return Settings.Global.putFloat(context.contentResolver, key, v)
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("应用启动关闭动效优化") },
-        text = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        val on = !pathOn
-                        if (writeKey(context, Port.KEY_MOTION_PATH, on)) {
-                            pathOn = on
-                        } else {
-                            Toast.makeText(context, "写入失败", Toast.LENGTH_SHORT).show()
-                        }
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("应用启动关闭动效优化")
+                Spacer(Modifier.weight(1f))
+                if (pathOn) {
+                    IconButton(onClick = {
+                        dur = 1.0f
+                        inertia = 1f
+                        zetaXY = 0.86f
+                        zetaScale = 0.86f
+                        zetaWH = 0.9f
+                    }) {
+                        Icon(Icons.Filled.RestartAlt, contentDescription = "恢复默认")
                     }
-                    .padding(vertical = 12.dp)
-            ) {
-                Text(
-                    "运动路径优化",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(Modifier.width(16.dp))
-                Switch(
-                    checked = pathOn,
-                    onCheckedChange = { on ->
-                        if (writeKey(context, Port.KEY_MOTION_PATH, on)) {
-                            pathOn = on
-                        } else {
-                            Toast.makeText(context, "写入失败", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                )
+                }
             }
         },
-        confirmButton = {},
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            val on = !pathOn
+                            if (writeKey(context, Port.KEY_MOTION_PATH, on)) {
+                                pathOn = on
+                            } else {
+                                Toast.makeText(context, "写入失败", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        .padding(vertical = 12.dp)
+                ) {
+                    Text(
+                        "运动路径优化",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(16.dp))
+                    Switch(
+                        checked = pathOn,
+                        onCheckedChange = { on ->
+                            if (writeKey(context, Port.KEY_MOTION_PATH, on)) {
+                                pathOn = on
+                            } else {
+                                Toast.makeText(context, "写入失败", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    )
+                }
+                if (pathOn) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("时长系数：" + String.format("%.1f", dur))
+                    Slider(
+                        value = dur,
+                        valueRange = 0.8f..1.5f,
+                        steps = 6,
+                        onValueChange = { dur = it }
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text("惯性系数：" + String.format("%.2f", inertia))
+                    Slider(
+                        value = inertia,
+                        valueRange = 0f..2f,
+                        steps = 19,
+                        onValueChange = { inertia = it }
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text("平移弹簧：" + String.format("%.2f", zetaXY))
+                    Slider(
+                        value = zetaXY,
+                        valueRange = 0.5f..1.5f,
+                        steps = 99,
+                        onValueChange = { zetaXY = it }
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text("缩放弹簧：" + String.format("%.2f", zetaScale))
+                    Slider(
+                        value = zetaScale,
+                        valueRange = 0.5f..1.5f,
+                        steps = 99,
+                        onValueChange = { zetaScale = it }
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text("比例弹簧：" + String.format("%.2f", zetaWH))
+                    Slider(
+                        value = zetaWH,
+                        valueRange = 0.5f..1.5f,
+                        steps = 99,
+                        onValueChange = { zetaWH = it }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val ok = putF(Port.KEY_MP_DURATION, dur) &&
+                        putF(Port.KEY_MP_INERTIA, inertia) &&
+                        putF(Port.KEY_MP_ZETA_XY, zetaXY) &&
+                        putF(Port.KEY_MP_ZETA_SCALE, zetaScale) &&
+                        putF(Port.KEY_MP_ZETA_WH, zetaWH)
+                Toast.makeText(
+                    context,
+                    if (ok) "已保存" else "写入失败",
+                    Toast.LENGTH_SHORT
+                ).show()
+                onDismiss()
+            }) { Text("确定") }
+        },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("关闭") }
+            TextButton(onClick = onDismiss) { Text("取消") }
         }
     )
 }

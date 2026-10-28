@@ -86,9 +86,9 @@ public final class ScaleComposer {
             this.sTo = targetH / screenH;
         }
         this.v0S = scaleV0;
-        float sw = settleOf(this.wFrom, this.wTo, CurveDemoSpring.ZETA_WH, 0f);
-        float sh = settleOf(this.hFrom, this.hTo, CurveDemoSpring.ZETA_WH, 0f);
-        float ss = settleOf(this.sFrom, this.sTo, CurveDemoSpring.ZETA_SCALE, scaleV0);
+        float sw = settleOf(this.wFrom, this.wTo, CurveDemoSpring.zetaWH(), 0f);
+        float sh = settleOf(this.hFrom, this.hTo, CurveDemoSpring.zetaWH(), 0f);
+        float ss = settleOf(this.sFrom, this.sTo, CurveDemoSpring.zetaScale(), scaleV0);
         this.settleSec = Math.max(sw, Math.max(sh, ss));
     }
 
@@ -101,9 +101,9 @@ public final class ScaleComposer {
     public float eval(float x) {
         float xn = clamp(x, 0f, 1f);
         float t = xn * settleSec;
-        float cdW = underDamped(t, wFrom, wTo, CurveDemoSpring.ZETA_WH, 0f);
-        float cdH = underDamped(t, hFrom, hTo, CurveDemoSpring.ZETA_WH, 0f);
-        float cdS = underDamped(t, sFrom, sTo, CurveDemoSpring.ZETA_SCALE, v0S);
+        float cdW = underDamped(t, wFrom, wTo, CurveDemoSpring.zetaWH(), 0f);
+        float cdH = underDamped(t, hFrom, hTo, CurveDemoSpring.zetaWH(), 0f);
+        float cdS = underDamped(t, sFrom, sTo, CurveDemoSpring.zetaScale(), v0S);
         // CD min-scale soft floor (MainPage.xaml.cs:412-415): the Scale
         // spring can undershoot (big RvScale, underdamped) below
         // minScale = min(FromScale, ToScale); CD decays it with a rational
@@ -199,37 +199,21 @@ public final class ScaleComposer {
     }
 
     /**
-     * Under-damped analytic spring (CurveDemo SpringAnimationInterpolator,
-     * MainPage.xaml.cs:120-151): same omega/zeta basis as CurveDemoSpring,
-     * closed form evaluated directly in value space (from -> to).
+     * Analytic spring value (CurveDemo SpringAnimationInterpolator basis)
+     * in value space (from -> to); ANY damping regime via
+     * CurveDemoSpring.springValue (zeta >= 1 no longer NaNs).
      */
     private static float underDamped(float t, float from, float to,
             float zeta, float v0) {
-        float omega = CurveDemoSpring.W;
-        float omegaD = omega * (float) Math.sqrt(1.0 - zeta * zeta);
-        float a = from - to;
-        float b = (v0 + zeta * omega * a) / omegaD;
-        double decay = Math.exp(-zeta * omega * t);
-        return (float) (to + decay * (a * Math.cos(omegaD * t)
-                + b * Math.sin(omegaD * t)));
+        return CurveDemoSpring.springValue(t, from, to, zeta, v0);
     }
 
     /**
      * Visible-settle estimate (CurveDemo GetSpringAnimationVisibleTick,
-     * 0.1% threshold): envelope decay time, per spring.
+     * 0.1% threshold): envelope decay time, per spring; ANY damping regime.
      */
     private static float settleOf(float from, float to, float zeta, float v0) {
-        float omega = CurveDemoSpring.W;
-        float omegaD = omega * (float) Math.sqrt(1.0 - zeta * zeta);
-        float a = from - to;
-        if (Math.abs(a) < 1.0e-4f && Math.abs(v0) < 1.0e-4f) {
-            return 0f;
-        }
-        float b = (v0 + zeta * omega * a) / omegaD;
-        double amp = Math.sqrt(a * a + b * b);
-        double eps = 0.001 * Math.max(Math.abs(a), 0.01);
-        double t = Math.log(amp / eps) / (zeta * omega);
-        return (float) Math.max(t, 0.05);
+        return CurveDemoSpring.springSettle(from, to, zeta, v0);
     }
 
     private static float clamp(double v, double lo, double hi) {

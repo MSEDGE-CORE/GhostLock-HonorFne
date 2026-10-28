@@ -865,7 +865,7 @@ public final class MotionReturnHome {
                     // 胶囊也走 CurveDemo 曲线 (slot-0 轻快, T = 1.1s),
                     // 仅目标值 (endPos, widenForCapsule) 与阈值不同.
                     stiffness = CurveDemoSpring.stiffness();
-                    damping = CurveDemoSpring.damping(CurveDemoSpring.ZETA_XY);
+                    damping = CurveDemoSpring.damping(CurveDemoSpring.zetaXY());
                     threshold = 0.3f;
                 } else if (capsule) {
                     stiffness = MotionParams.CAPSULE_MOVEMENT_STIFFNESS;
@@ -1002,7 +1002,7 @@ public final class MotionReturnHome {
                 if (path) {
                     // 胶囊也走 CurveDemo 曲线, 仅目标值 (endPos) 与阈值不同.
                     stiffness = CurveDemoSpring.stiffness();
-                    damping = CurveDemoSpring.damping(CurveDemoSpring.ZETA_SCALE);
+                    damping = CurveDemoSpring.damping(CurveDemoSpring.zetaScale());
                     threshold = capsule ? MotionParams.CAPSULE_VALUE_THRESHOLD : 5.0e-4f;
                 } else if (capsule) {
                     stiffness = MotionParams.CAPSULE_SCALE_STIFFNESS;
