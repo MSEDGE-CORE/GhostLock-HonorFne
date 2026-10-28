@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
@@ -224,6 +225,7 @@ private fun SettingsScreen() {
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
             topBar = {
                 TopAppBar(
+                    windowInsets = WindowInsets.statusBars,
                     title = {
                         Text(when (tab) {
                             0 -> "耀衍"
@@ -271,7 +273,7 @@ private fun SettingsScreen() {
                 .padding(top = padding.calculateTopPadding())
                 .windowInsetsPadding(
                     WindowInsets.displayCutout.only(
-                        WindowInsetsSides.Left + WindowInsetsSides.Right
+                        WindowInsetsSides.Right
                     )
                 )
                 .padding(bottom = padding.calculateBottomPadding())
