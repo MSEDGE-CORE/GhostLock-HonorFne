@@ -8,9 +8,13 @@ import android.view.View;
 import android.view.animation.Interpolator;
 
 import com.wxz.hnlauncherport.Port;
+import com.wxz.hnlauncherport.motion.CurveDemoSpring;
 import com.wxz.hnlauncherport.motion.MotionParams;
+import com.wxz.hnlauncherport.motion.ScaleComposer;
 import com.wxz.hnlauncherport.motion.SpringFactory;
 import com.wxz.hnlauncherport.swipe.WindowFollowScale;
+
+import java.util.WeakHashMap;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -117,6 +121,22 @@ public final class MotionReturnHome {
 
     private static Class<?> lauClass;
 
+    // CurveDemo 运动路径优化 (KEY_MOTION_PATH) scale 组合:
+    // W/H (zeta0.9, v0=0) 与 Scale (zeta0.82, RvScale) 三条独立解析弹簧,
+    // 每帧求值后乘法合成为宿主逐轴 scale (ScaleComposer). 宿主
+    // SpringInterpolator 实例仅作 instanceof/时长载体, 其 getInterpolation
+    // 按 COMPOSED 身份逐实例接管 (un-warp piecewise 时间 -> 组合器求值),
+    // getScaleAndFasterValue 按 stash 输出 {sy, sx}.
+    private static final WeakHashMap<Object, ScaleComposer> COMPOSED = new WeakHashMap<>();
+    private static ScaleComposer currentComposer;
+    private static boolean composerBuilt;
+    private static float s0x = 1f;
+    private static float s0y = 1f;
+    private static boolean s0Valid;
+    // CD target=-1 fade (capsule / no-icon): per-frame elapsed inputs.
+    private static float lastFrameFraction = -1f;
+    private static long lastHomeDurMs = 0L;
+
     public static void install(ClassLoader cl) {
         Class<?> hsv2 = XposedHelpers.findClass(HSV2, cl);
         lauClass = XposedHelpers.findClassIfExists(LAU, cl);
@@ -164,14 +184,34 @@ public final class MotionReturnHome {
                             return;
                         }
                         try {
-                            if (isCapsule()) {
-                                return;
-                            }
                             Object h = param.thisObject;
                             boolean z = (Boolean) param.args[3];
                             int rot = liveRot(h);
                             Point sz = (Point) XposedHelpers.getObjectField(h, "mScreenSize");
                             if (sz == null) {
+                                return;
+                            }
+                            // CurveDemo 组合 scale: 捕获松手时逐轴实际 scale
+                            // (sourceScale 前身, calc :984-985 的 rectF3 =
+                            // FROM rect / screen; 旋转时与宿主 :956 同步转置).
+                            // reset 每次手势的组合器状态.
+                            currentComposer = null;
+                            composerBuilt = false;
+                            RectF fromRaw = (RectF) param.args[1];
+                            RectF fromP = fromRaw;
+                            if (rot != 0 && fromRaw != null && !fromRaw.isEmpty()) {
+                                fromP = new RectF(fromRaw.top, fromRaw.left,
+                                        fromRaw.bottom, fromRaw.right);
+                            }
+                            if (fromP != null && fromP.width() > 1f
+                                    && fromP.height() > 1f) {
+                                s0x = Math.max(0.05f, Math.min(1f, fromP.width() / sz.x));
+                                s0y = Math.max(0.05f, Math.min(1f, fromP.height() / sz.y));
+                                s0Valid = true;
+                            } else {
+                                s0Valid = false;
+                            }
+                            if (isCapsule()) {
                                 return;
                             }
                             RectF to = z
@@ -282,6 +322,50 @@ public final class MotionReturnHome {
                 RectF.class, boolean.class, scaleHook(cl, true));
         XposedHelpers.findAndHookMethod(hsv2, "getScaleSpringInterpolatorY",
                 RectF.class, boolean.class, scaleHook(cl, false));
+        // 运动路径优化: 放开 getDuration4HomeAnim 的 670ms 封顶
+        // (getMaxSpringDuration -> AnimConstants.sMaxDurationReturnHome),
+        // 否则 CurveDemo ~771ms 的弹簧在 670ms 被截断.
+        XposedHelpers.findAndHookMethod(hsv2, "getMaxSpringDuration",
+                new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                if (!motionEnabled() || !Port.on(Port.KEY_MOTION_PATH)) {
+                    return;
+                }
+                param.setResult(1200L);
+            }
+        });
+        // 运动路径优化: 逐实例接管组合 scale 弹簧的 getInterpolation.
+        // getInterpolation 可能声明在 SpringInterpolator 或其父类
+        // PhysicalInterpolatorBase - 两处都尝试, hookAllMethods 按名匹配.
+        installComposedInterpHook(cl, "com.hihonor.dynamicanimation.interpolator.SpringInterpolator");
+        installComposedInterpHook(cl, "com.hihonor.dynamicanimation.interpolator.PhysicalInterpolatorBase");
+        // 运动路径优化: getScaleAndFasterValue 输出替换为组合器 stash
+        // ({sx, sy}: [0]=宽比 -> 消费端 setScaleX/Y 双轴; [1]=高比 -> icon
+        // Sy; 见 ScaleComposer.stashResult 语义注释), 跳过宿主 faster-ratio
+        // 单弹簧链 (hookAllMethods 免参数类型解析, HSV2 内该方法唯一).
+        try {
+            XposedBridge.hookAllMethods(hsv2, "getScaleAndFasterValue", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    if (!motionEnabled() || !Port.on(Port.KEY_MOTION_PATH)) {
+                        return;
+                    }
+                    try {
+                        ScaleComposer c = currentComposer;
+                        if (c == null || !c.hasStash()) {
+                            return;
+                        }
+                        param.setResult(c.stashResult());
+                    } catch (Throwable t) {
+                        Port.log("MotionScaleCompose apply failed", t);
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            Port.log("MotionScaleCompose apply hook failed", t);
+        }
+        installFadeHooks(cl);
         installDiag(cl);
         Port.log("MotionReturnHome v0.9 installed");
     }
@@ -384,6 +468,13 @@ public final class MotionReturnHome {
                                 if (!motionEnabled()) {
                                     return;
                                 }
+                                // CD target=-1 fade: stash the return-home
+                                // animator duration for the no-icon elapsed
+                                // reconstruction (installFadeHooks).
+                                Object dur = param.getResult();
+                                if (Port.on(Port.KEY_MOTION_PATH) && dur instanceof Number) {
+                                    lastHomeDurMs = ((Number) dur).longValue();
+                                }
                                 Port.log("MotionDur dur=" + param.getResult()
                                         + " sx=" + param.args[0]
                                         + " sy=" + param.args[1]
@@ -393,6 +484,116 @@ public final class MotionReturnHome {
             }
         } catch (Throwable t) {
             Port.log("MotionDiag dur failed", t);
+        }
+    }
+
+    /**
+     * CD target=-1 fade for the capsule / no-icon return-home paths
+     * (CurveDemo MainPage.xaml.cs:1344-1345 + :425): opacity begins at
+     * 0.1*TDT and springs (zeta 1.0) 1 -> 0 over 0.3*TDT.
+     *  - capsule: stock RoundImageView.setSnapshotAlphaCapsule is a fixed
+     *    absolute [200, 350]ms window - replace the return value.
+     *  - no-icon: stock setSnapshotAlpha() fades with min(mAlpha,
+     *    1 - mProgress) across the whole animation - replace the return
+     *    value; elapsed = per-frame animatedFraction (stashed from
+     *    setProgressAndIconSy, called earlier in the same frame,
+     *    HSV2:1438 vs :1473) x the return-home animator duration
+     *    (stashed from getDuration4HomeAnim). Consume-once keeps foreign
+     *    callers of setSnapshotAlpha() (e.g. HSV2:1785) on stock.
+     */
+    private static void installFadeHooks(ClassLoader cl) {
+        try {
+            Class<?> riv = XposedHelpers.findClassIfExists(
+                    "com.hihonor.android.launcher.quickstep.views.RoundImageView", cl);
+            if (riv == null) {
+                Port.log("MotionFade: RoundImageView not found");
+                return;
+            }
+            XposedHelpers.findAndHookMethod(riv, "setSnapshotAlphaCapsule",
+                    float.class, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    if (!motionEnabled() || !Port.on(Port.KEY_MOTION_PATH)) {
+                        return;
+                    }
+                    float elapsedMs = (Float) param.args[0];
+                    param.setResult(CurveDemoSpring.fadeOutAlpha(elapsedMs / 1000f));
+                }
+            });
+            XposedHelpers.findAndHookMethod(riv, "setProgressAndIconSy",
+                    float.class, float.class, float.class, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    if (!motionEnabled() || !Port.on(Port.KEY_MOTION_PATH)) {
+                        return;
+                    }
+                    lastFrameFraction = (Float) param.args[1];
+                }
+            });
+            XposedHelpers.findAndHookMethod(riv, "setSnapshotAlpha", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    if (!motionEnabled() || !Port.on(Port.KEY_MOTION_PATH)) {
+                        return;
+                    }
+                    try {
+                        if (XposedHelpers.getBooleanField(param.thisObject, "mIsReturnToIcon")) {
+                            return; // icon fade: stock scale-threshold logic
+                        }
+                        if (lastFrameFraction < 0f || lastHomeDurMs <= 0L) {
+                            return;
+                        }
+                        float elapsedMs = lastFrameFraction * lastHomeDurMs;
+                        lastFrameFraction = -1f; // consume once per frame
+                        param.setResult(CurveDemoSpring.fadeOutAlpha(elapsedMs / 1000f));
+                    } catch (Throwable t) {
+                        Port.log("MotionFade noicon failed", t);
+                    }
+                }
+            });
+            Port.log("MotionFade hooks installed");
+        } catch (Throwable t) {
+            Port.log("MotionFade install failed", t);
+        }
+    }
+
+    /**
+     * hookAllMethods(cls, "getInterpolation") on the given host class;
+     * composed instances (COMPOSED map) get the CurveDemo three-spring
+     * evaluation, everything else (trans springs, launch interpolators)
+     * passes through untouched.
+     */
+    private static void installComposedInterpHook(ClassLoader cl, String clsName) {
+        try {
+            Class<?> cls = XposedHelpers.findClassIfExists(clsName, cl);
+            if (cls == null) {
+                return;
+            }
+            XposedBridge.hookAllMethods(cls, "getInterpolation", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    ScaleComposer c = COMPOSED.get(param.thisObject);
+                    if (c == null || !motionEnabled() || !Port.on(Port.KEY_MOTION_PATH)) {
+                        return;
+                    }
+                    try {
+                        // un-warp 宿主 piecewise 时间 -> 线性时间 (CurveDemo
+                        // 弹簧按线性时钟驱动), 求值并 stash {sx, sy}.
+                        float x = ScaleComposer.inversePiecewise((Float) param.args[0]);
+                        if (x >= 1f && c.hasStash() && !c.atEnd()) {
+                            // quick-end (z4) 分支的终点探针 (piecewise(1.0)):
+                            // 不覆盖运行中的 stash, 返回归一化终点即可.
+                            param.setResult(1f);
+                            return;
+                        }
+                        param.setResult(c.eval(x));
+                    } catch (Throwable t) {
+                        Port.log("MotionScaleCompose interp failed", t);
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            Port.log("MotionScaleCompose interp hook failed: " + clsName, t);
         }
     }
 
@@ -556,6 +757,12 @@ public final class MotionReturnHome {
                 // return animation never settled - window stuck mid-air
                 // until the next swipe. Restore the v0.4 0.25 scaling.
                 boolean isReturnHome = (Boolean) param.args[2];
+                // 运动路径优化: translation v0 走 CurveDemo 传递
+                // (MainPage.xaml.cs:2384-2385, slot-0):
+                //   RvX = vx * FlyFar/(20*sqrt(T))               = vx*0.25
+                //   RvY = vy*(0.5-F)/(1-F)/30*FlyFar/sqrt(T)     = vy*0.0625
+                // 胶囊与普通窗口同一条曲线, 仅目标值 (endPos) 不同.
+                boolean path = Port.on(Port.KEY_MOTION_PATH);
                 // WindowFollowScale (窗口跟手缩放) curve live: the from-rect
                 // is OUR curve rect and getTransSpeed is hooked to return the
                 // card's VISUAL center velocity (z-aware per consumer frame,
@@ -566,11 +773,19 @@ public final class MotionReturnHome {
                 // (curve live -> synthesized -> v0.4 classic); capsule flows
                 // never render the curve, so curveVelFresh stays false
                 // there and the chain falls through to the classic clamp.
-                boolean curveLive = WindowFollowScale.curveVelFresh();
+                boolean curveLive = !path && WindowFollowScale.curveVelFresh();
                 boolean wfsSyn = false;
                 float v0;
                 int rot;
-                if (curveLive) {
+                if (path) {
+                    rot = liveRot(h);
+                    float speed = screenSpeed(h, isReturnHome, isX, rot);
+                    
+                    // rot: 0 竖屏 x1, 1/3 横屏 x0.4 (三目需整体括号,
+                    // 否则 * 优先级高于 == 会把 v0 变成常量).
+                    v0 = CurveDemoSpring.transV0(speed, isX) * 5f
+                            * (rot == 0 ? 1f : 0.4f);
+                } else if (curveLive) {
                     // v7.5 landscape: curveVelX/Y are the card's VISUAL
                     // velocity. The icon (z) consumer is the PANEL
                     // (portrait pipeline) frame - remap with the LIVE
@@ -646,7 +861,13 @@ public final class MotionReturnHome {
                 float stiffness;
                 float damping;
                 float threshold;
-                if (capsule) {
+                if (Port.on(Port.KEY_MOTION_PATH)) {
+                    // 胶囊也走 CurveDemo 曲线 (slot-0 轻快, T = 1.1s),
+                    // 仅目标值 (endPos, widenForCapsule) 与阈值不同.
+                    stiffness = CurveDemoSpring.stiffness();
+                    damping = CurveDemoSpring.damping(CurveDemoSpring.ZETA_XY);
+                    threshold = 0.3f;
+                } else if (capsule) {
                     stiffness = MotionParams.CAPSULE_MOVEMENT_STIFFNESS;
                     damping = MotionParams.CAPSULE_MOVEMENT_DAMPING;
                     threshold = MotionParams.CAPSULE_VALUE_THRESHOLD;
@@ -692,17 +913,52 @@ public final class MotionReturnHome {
 
                 float ratio = rectF.height() / span;
                 float endPos = Math.abs(1f - ratio);
+                boolean path = Port.on(Port.KEY_MOTION_PATH);
                 // WindowFollowScale curve live: the scale spring value is
                 // (1 - sigma) and the hook tracks the TRUE sigma rate
                 // (sVelSig, sigma/s, measured off its own trajectory
                 // algorithm) - use it directly instead of the endPos-based
                 // stock chain rule below. Safety clamp only (native
                 // max-speed semantics: endPos * 37).
-                boolean curveLive = !capsule && WindowFollowScale.curveVelFresh();
+                boolean curveLive = !capsule && !path && WindowFollowScale.curveVelFresh();
                 boolean wfsSyn = false;
+                boolean composed = false;
                 int rot;
                 float v0;
-                if (curveLive) {
+                if (path) {
+                    // 运动路径优化: 三条独立 CurveDemo 弹簧组合 (ScaleComposer):
+                    //   W/H (zeta0.9, v0=0) 负责屏纵横比 -> 目标纵横比形变,
+                    //   Scale (zeta0.82, RvScale) 负责全部缩小 + 甩感;
+                    //   host scaleX = cdW/screenW * cdS, scaleY = cdH/screenH * cdS.
+                    // 有尺寸目标 (图标/胶囊) 时走组合器; 退化点目标 (无图标)
+                    // 保留单弹簧 (zeta0.82) 兜底. 组合器每手势仅建一次
+                    // (X/Y 两个 hook 共享, Y 先调用).
+                    rot = liveRot(h);
+                    // z=true 的 getTransSpeed 是未封顶原始值 (可达 -150k
+                    // px/s, v0S 达行程的 ~100 倍 -> S 俯冲后反向弹回 =
+                    // 卡片 cdScaleY 反转). 宿主自己的 scale 链先
+                    // boundToRange(+-11000) (getScaleSpringInterpolatorY),
+                    // 同款封顶.
+                    float vyRaw = screenSpeed(h, isIcon, false, rot);
+                    float vy = Math.max(-11000f, Math.min(11000f, vyRaw));
+                    // CD RvScale 的 scaleCur = 松手时实际 scale (AWGScale.
+                    // ScaleY), 即 s0; 退化兜底用目标 ratio.
+                    float scaleCur = s0Valid ? s0y : ratio;
+                    // capsule cdScale 初速度 x3 (per tuning).
+                    v0 = CurveDemoSpring.scaleV0(vy, span, scaleCur) * -5f
+                            * (capsule ? 5f : 1f);
+                    if (s0Valid && rectF.width() > 1f && rectF.height() > 1f) {
+                        composed = true;
+                        if (!composerBuilt) {
+                            currentComposer = new ScaleComposer(rectF.width(),
+                                    rectF.height(), screen.x, screen.y, s0x, s0y, v0);
+                            composerBuilt = true;
+                            Port.log("MotionScaleCompose " + currentComposer.describe()
+                                    + " s0x=" + s0x + " s0y=" + s0y
+                                    + (capsule ? " capsule" : ""));
+                        }
+                    }
+                } else if (curveLive) {
                     rot = -1;
                     // wfs scale initial velocity gain x1.4, clamp endPos*18
                     v0 = Math.max(Math.min(Math.abs(WindowFollowScale.curveVelSig()) * 1.5f,
@@ -743,7 +999,12 @@ public final class MotionReturnHome {
                 float stiffness;
                 float damping;
                 float threshold;
-                if (capsule) {
+                if (path) {
+                    // 胶囊也走 CurveDemo 曲线, 仅目标值 (endPos) 与阈值不同.
+                    stiffness = CurveDemoSpring.stiffness();
+                    damping = CurveDemoSpring.damping(CurveDemoSpring.ZETA_SCALE);
+                    threshold = capsule ? MotionParams.CAPSULE_VALUE_THRESHOLD : 5.0e-4f;
+                } else if (capsule) {
                     stiffness = MotionParams.CAPSULE_SCALE_STIFFNESS;
                     damping = MotionParams.CAPSULE_SCALE_DAMPING;
                     threshold = MotionParams.CAPSULE_VALUE_THRESHOLD;
@@ -758,12 +1019,18 @@ public final class MotionReturnHome {
                 Port.log("MotionScale" + (isX ? "X" : "Y")
                         + " endPos=" + endPos + " v0=" + v0
                         + " rot=" + rot
+                        + (composed ? " composed" : "")
                         + (curveLive ? " wfs" : (wfsSyn ? " wfsSyn" : ""))
                         + (capsule ? " capsule" : ""));
 
                 Object spring = SpringFactory.make(cl, stiffness, damping,
                         endPos, v0, threshold);
                 if (spring != null) {
+                    if (composed) {
+                        // 载体实例: getInterpolation 被 COMPOSED 逐实例接管,
+                        // getDuration 供宿主 instanceof/时长链.
+                        COMPOSED.put(spring, currentComposer);
+                    }
                     param.setResult(spring);
                 }
                 } catch (Throwable t) {

@@ -159,9 +159,13 @@ private fun SettingsScreen() {
     var pendingRestart by remember { mutableStateOf<String?>(null) }
     var showUnlockDialog by remember { mutableStateOf(false) }
     var showThresholdDialog by remember { mutableStateOf(false) }
+    var showMotionDialog by remember { mutableStateOf(false) }
 
     if (showUnlockDialog) {
         UnlockAnimDialog(onDismiss = { showUnlockDialog = false })
+    }
+    if (showMotionDialog) {
+        MotionPathDialog(onDismiss = { showMotionDialog = false })
     }
     if (showThresholdDialog) {
         OneStepThresholdDialog(onDismiss = { showThresholdDialog = false })
@@ -358,9 +362,11 @@ private fun SettingsScreen() {
                         motionRows.forEach { row ->
                             SettingsSwitchItem(
                                 row, secure,
-                                onRowClick = if (row.key == Port.KEY_ADV_UNLOCK_ANIM) {
-                                    { showUnlockDialog = true }
-                                } else null
+                                onRowClick = when (row.key) {
+                                    Port.KEY_ADV_UNLOCK_ANIM -> { { showUnlockDialog = true } }
+                                    Port.KEY_MOTION -> { { showMotionDialog = true } }
+                                    else -> null
+                                }
                             )
                         }
                     }
@@ -633,6 +639,59 @@ private fun SettingsSwitchItem(
             enabled = secure
         )
     }
+}
+
+/**
+ * 运动路径优化 (应用启动关闭动效优化行点击弹出):
+ *  - 运动路径优化: CurveDemo 解析式弹簧替换动效曲线 (第 0 个 Curve 参数 + 默认时长)
+ */
+@Composable
+private fun MotionPathDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    var pathOn by remember { mutableStateOf(readKey(context, Port.KEY_MOTION_PATH)) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("应用启动关闭动效优化") },
+        text = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        val on = !pathOn
+                        if (writeKey(context, Port.KEY_MOTION_PATH, on)) {
+                            pathOn = on
+                        } else {
+                            Toast.makeText(context, "写入失败", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    .padding(vertical = 12.dp)
+            ) {
+                Text(
+                    "运动路径优化",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(16.dp))
+                Switch(
+                    checked = pathOn,
+                    onCheckedChange = { on ->
+                        if (writeKey(context, Port.KEY_MOTION_PATH, on)) {
+                            pathOn = on
+                        } else {
+                            Toast.makeText(context, "写入失败", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                )
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+    )
 }
 
 /**

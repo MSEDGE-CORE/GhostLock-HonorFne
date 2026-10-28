@@ -19,6 +19,7 @@ public final class Port {
 
     // Feature switches (Settings.Global, readable by launcher process)
     public static final String KEY_MOTION = "hn_port_motion";       // 1 = MotionEngine-style return home
+    public static final String KEY_MOTION_PATH = "hn_port_motion_path"; // 1 = CurveDemo analytic spring (slot 0 params, default duration)
     public static final String KEY_PARALLEL = "hn_port_parallel";   // 1 = 连续切换应用: click new icon kills prev app anim immediately + canBreak bypass
     public static final String KEY_BLUR = "hn_port_blur";           // 1 = force transition blur on all models
     public static final String KEY_ICON_HIDE = "hn_port_icon_hide"; // 1 = hide launching icon during app-open anim (large-folder fix)

@@ -18,6 +18,8 @@ public final class XposedHelpers {
     public static Object getAdditionalInstanceField(Object obj, String fieldName) { return null; }
     public static int getIntField(Object obj, String fieldName) { return 0; }
     public static void setIntField(Object obj, String fieldName, int value) {}
+    public static int getStaticIntField(Class<?> c, String fieldName) { return 0; }
+    public static void setStaticIntField(Class<?> c, String fieldName, int value) {}
     public static boolean getBooleanField(Object obj, String fieldName) { return false; }
     public static void setBooleanField(Object obj, String fieldName, boolean value) {}
     public static float getFloatField(Object obj, String fieldName) { return 0; }
