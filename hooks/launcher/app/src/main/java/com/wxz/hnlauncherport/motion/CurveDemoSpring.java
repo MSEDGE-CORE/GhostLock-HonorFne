@@ -7,7 +7,7 @@ import com.wxz.hnlauncherport.Port;
  * slot-0 curve ("轻快") with the default duration, ported onto honor's
  * SpringInterpolator:
  *
- *   w = 4*PI / T  (T = 1.1s, TransitionDurationTime default 1.0)
+ *   w = 4*PI / T  (T = 0.85s, TransitionDurationTime default 1.0)
  *   k = w^2, c = 2*zeta*w
  *   (honor SpringModelBase: x'' + c*x' + k*x = 0, m = 1)
  *
@@ -26,14 +26,27 @@ public final class CurveDemoSpring {
     public static final float W = (float) (4.0 * Math.PI / T_SECONDS);
     public static final float ZETA_XY = 0.86f;
     public static final float ZETA_SCALE = 0.86f;
-    public static final float ZETA_WH = 0.9f;
+    public static final float ZETA_WH = 0.86f;
     public static final float ZETA_CORNER = 1.0f;
 
-    // ---- 曲线自定义 (MotionPathDialog, Settings.Global) ----
+    // ---- 曲线风格 (MotionPathDialog radio, Settings.Global) ----
 
-    /** T = 基线时长 * 时长系数 (0.8-1.5, 默认 1.0)。 */
+    /** 0 = 轻快 (path 默认), 1 = 漂浮, 2 = 自定义弹簧 (劲度 = path 关). */
+    public static int style() {
+        return Math.max(0, Math.min(2, Port.getInt(Port.KEY_MP_STYLE, 0)));
+    }
+
+    /** 滑条参数 (KEY_MP_*) 只在 "自定义弹簧" 风格下生效, 预设用内置默认. */
+    private static boolean custom() {
+        return style() == 2;
+    }
+
+    // ---- 曲线自定义 (仅 "自定义弹簧" 风格, MotionPathDialog, Settings.Global) ----
+
+    /** T = 基线时长 * 时长系数 (0.8-1.5, 默认 1.0)。path 开即生效 (含预设)。 */
     public static float tSeconds() {
-        return T_SECONDS * Port.getFloat(Port.KEY_MP_DURATION, 1.0f);
+        return T_SECONDS * (Port.on(Port.KEY_MOTION_PATH)
+                ? Port.getFloat(Port.KEY_MP_DURATION, 1.0f) : 1.0f);
     }
 
     /** w = 4*PI / T, 随时长系数动态变化。 */
@@ -46,20 +59,34 @@ public final class CurveDemoSpring {
     }
 
     public static float zetaXY() {
-        return clampZeta(Port.getFloat(Port.KEY_MP_ZETA_XY, ZETA_XY));
+        return custom() ? clampZeta(Port.getFloat(Port.KEY_MP_ZETA_XY, ZETA_XY)) : ZETA_XY;
     }
 
     public static float zetaScale() {
-        return clampZeta(Port.getFloat(Port.KEY_MP_ZETA_SCALE, ZETA_SCALE));
+        return custom() ? clampZeta(Port.getFloat(Port.KEY_MP_ZETA_SCALE, ZETA_SCALE)) : ZETA_SCALE;
     }
 
     public static float zetaWH() {
-        return clampZeta(Port.getFloat(Port.KEY_MP_ZETA_WH, ZETA_WH));
+        return custom() ? clampZeta(Port.getFloat(Port.KEY_MP_ZETA_WH, ZETA_WH)) : ZETA_WH;
     }
 
-    /** 惯性系数 (0-10, 默认 1): 乘在 transV0/scaleV0 上。 */
+    /**
+     * 漂浮风格 (CD CurveStyle==1, MainPage.xaml.cs:1223/:1367):
+     * ScaleDamping = 1.0 - ToY / ActualHeight * 0.3 - scale 弹簧 zeta 随
+     * 目标 Y 坐标插值: 目标在顶部 (ToY=0) -> zeta 1.0 无过冲, 在底部 ->
+     * zeta 0.7 漂浮回弹。其余风格退回 zetaScale()。
+     */
+    public static float zetaScaleTargeted(float targetTopY, float screenH) {
+        if (style() == 1 && screenH > 1f) {
+            return clampZeta(1.0f - (targetTopY / screenH) * 0.3f);
+        }
+        return zetaScale();
+    }
+
+    /** 惯性系数 (0-10, 默认 1): 乘在 transV0/scaleV0 上。path 开即生效 (含预设)。 */
     public static float inertia() {
-        return Port.getFloat(Port.KEY_MP_INERTIA, 1.0f);
+        return Port.on(Port.KEY_MOTION_PATH)
+                ? Port.getFloat(Port.KEY_MP_INERTIA, 1.0f) : 1.0f;
     }
 
     // Gesture-handoff transfer (MainPage.xaml.cs:2384-2386): finger speed
@@ -103,7 +130,7 @@ public final class CurveDemoSpring {
      * target=-1 fade (MainPage.xaml.cs:1283+, slot-0): opacity begins at
      * 0.1*TDT and springs (OpacityDamping 1.0, critically damped) 1 -> 0,
      * frame application :425. Per tuning the fade is extended to the
-     * animation end t = T_SECONDS (0.9s): the spring spans
+     * animation end t = T_SECONDS (0.85s): the spring spans
      * [0.1*TDT, T_SECONDS] and settles exactly at the end.
      */
     public static final float OPACITY_BEGIN_S = 0.1f * TRANSITION_DURATION;

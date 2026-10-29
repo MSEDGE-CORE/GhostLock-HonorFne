@@ -24,7 +24,7 @@ import de.robv.android.xposed.XposedHelpers;
  *  - TaskBarIconClickAnimation ctor: own mAppLaunchInterpolator field,
  *    same GestureAnimationController params (dock-bar icon launch).
  *
- * Replace all three with the CurveDemo slot-0 spring (zeta 0.82, T = 1.1s,
+ * Replace all three with the CurveDemo slot-0 spring (zeta 0.82, T = 0.85s,
  * v0 = 0, minVisibleChange 0.001). Duration follows automatically because
  * every consumer derives it from the interpolator's getDuration().
  */

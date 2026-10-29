@@ -61,6 +61,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -191,7 +192,7 @@ private fun SettingsScreen() {
 
     // 动效
     val motionRows = remember { listOf(
-        ToggleRow("应用启动关闭动效优化", "新版模型，连贯曲线，横屏修复",
+        ToggleRow("应用启动关闭动效优化...", "新版模型，连贯曲线，横屏修复",
             Port.KEY_MOTION, listOf(Port.KEY_ICON_HIDE)),
         ToggleRow("锚点优化", "窗口向0.2移动缩小", Port.KEY_WIN_SCALE),
         ToggleRow("连续切换应用", "立即停止上一个窗口", Port.KEY_PARALLEL),
@@ -643,12 +644,19 @@ private fun SettingsSwitchItem(
 
 /**
  * 运动路径优化 (应用启动关闭动效优化行点击弹出):
- *  - 运动路径优化: CurveDemo 解析式弹簧替换动效曲线 (第 0 个 Curve 参数 + 默认时长)
+ *  - 曲线风格 radio: 劲度 (path 关) / 轻快 (path 默认, ζ 0.86) /
+ *    漂浮 (scale 弹簧随目标 Y 插值) / 自定义弹簧 (滑条)
  */
 @Composable
 private fun MotionPathDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
-    var pathOn by remember { mutableStateOf(readKey(context, Port.KEY_MOTION_PATH)) }
+    val pathOn = readKey(context, Port.KEY_MOTION_PATH)
+    val styleKey = Settings.Global.getInt(
+        context.contentResolver, Port.KEY_MP_STYLE, 0).coerceIn(0, 2)
+    // UI 风格序: 0=劲度 1=轻快 2=漂浮 3=自定义弹簧
+    var styleSel by remember {
+        mutableIntStateOf(if (pathOn) styleKey + 1 else 0)
+    }
     var dur by remember {
         mutableFloatStateOf(
             Settings.Global.getFloat(
@@ -672,7 +680,7 @@ private fun MotionPathDialog(onDismiss: () -> Unit) {
     var zetaWH by remember {
         mutableFloatStateOf(
             Settings.Global.getFloat(
-                context.contentResolver, Port.KEY_MP_ZETA_WH, 0.9f).coerceIn(0.5f, 1.5f))
+                context.contentResolver, Port.KEY_MP_ZETA_WH, 0.86f).coerceIn(0.5f, 1.5f))
     }
 
     fun putF(key: String, v: Float): Boolean {
@@ -685,61 +693,48 @@ private fun MotionPathDialog(onDismiss: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("应用启动关闭动效优化")
                 Spacer(Modifier.weight(1f))
-                if (pathOn) {
-                    IconButton(onClick = {
-                        dur = 1.0f
-                        inertia = 1f
-                        zetaXY = 0.86f
-                        zetaScale = 0.86f
-                        zetaWH = 0.9f
-                    }) {
-                        Icon(Icons.Filled.RestartAlt, contentDescription = "恢复默认")
-                    }
+                IconButton(onClick = {
+                    dur = 1.0f
+                    inertia = 1f
+                    zetaXY = 0.86f
+                    zetaScale = 0.86f
+                    zetaWH = 0.86f
+                }) {
+                    Icon(Icons.Filled.RestartAlt, contentDescription = "恢复默认")
                 }
             }
         },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            val on = !pathOn
-                            if (writeKey(context, Port.KEY_MOTION_PATH, on)) {
-                                pathOn = on
-                            } else {
-                                Toast.makeText(context, "写入失败", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                        .padding(vertical = 12.dp)
-                ) {
-                    Text(
-                        "运动路径优化",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Spacer(Modifier.width(16.dp))
-                    Switch(
-                        checked = pathOn,
-                        onCheckedChange = { on ->
-                            if (writeKey(context, Port.KEY_MOTION_PATH, on)) {
-                                pathOn = on
-                            } else {
-                                Toast.makeText(context, "写入失败", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    )
+                Text(
+                    "曲线风格",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                listOf("劲度", "轻快", "漂浮", "自定义弹簧").forEachIndexed { i, name ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { styleSel = i }
+                            .padding(vertical = 2.dp)
+                    ) {
+                        RadioButton(
+                            selected = styleSel == i,
+                            onClick = { styleSel = i }
+                        )
+                        Text(name, fontSize = 15.sp,
+                            color = MaterialTheme.colorScheme.onSurface)
+                    }
                 }
-                if (pathOn) {
+                if (styleSel != 0) {
                     Spacer(Modifier.height(12.dp))
-                    Text("时长系数：" + String.format("%.1f", dur))
+                    Text("时长系数：" + String.format("%.2f", dur))
                     Slider(
                         value = dur,
-                        valueRange = 0.8f..1.5f,
-                        steps = 6,
+                        valueRange = 0.5f..1.5f,
+                        steps = 19,
                         onValueChange = { dur = it }
                     )
                     Spacer(Modifier.height(12.dp))
@@ -750,6 +745,8 @@ private fun MotionPathDialog(onDismiss: () -> Unit) {
                         steps = 19,
                         onValueChange = { inertia = it }
                     )
+                }
+                if (styleSel == 3) {
                     Spacer(Modifier.height(12.dp))
                     Text("平移弹簧：" + String.format("%.2f", zetaXY))
                     Slider(
@@ -779,11 +776,24 @@ private fun MotionPathDialog(onDismiss: () -> Unit) {
         },
         confirmButton = {
             TextButton(onClick = {
-                val ok = putF(Port.KEY_MP_DURATION, dur) &&
-                        putF(Port.KEY_MP_INERTIA, inertia) &&
-                        putF(Port.KEY_MP_ZETA_XY, zetaXY) &&
-                        putF(Port.KEY_MP_ZETA_SCALE, zetaScale) &&
-                        putF(Port.KEY_MP_ZETA_WH, zetaWH)
+                val styleIdx = when (styleSel) {
+                    1 -> 0 // 轻快
+                    2 -> 1 // 漂浮
+                    3 -> 2 // 自定义弹簧
+                    else -> 0 // 劲度 (path 关, style 无意义)
+                }
+                var ok = writeKey(context, Port.KEY_MOTION_PATH, styleSel != 0) &&
+                        Settings.Global.putInt(
+                            context.contentResolver, Port.KEY_MP_STYLE, styleIdx)
+                if (styleSel != 0) {
+                    ok = ok && putF(Port.KEY_MP_DURATION, dur) &&
+                            putF(Port.KEY_MP_INERTIA, inertia)
+                }
+                if (styleSel == 3) {
+                    ok = ok && putF(Port.KEY_MP_ZETA_XY, zetaXY) &&
+                            putF(Port.KEY_MP_ZETA_SCALE, zetaScale) &&
+                            putF(Port.KEY_MP_ZETA_WH, zetaWH)
+                }
                 Toast.makeText(
                     context,
                     if (ok) "已保存" else "写入失败",

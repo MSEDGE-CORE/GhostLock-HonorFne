@@ -46,6 +46,9 @@ public final class ScaleComposer {
     private final float sTo;
     private final float v0S;
 
+    /** 漂浮风格: 随目标 Y 插值的 scale zeta (构建时定, 逐帧恒定). */
+    private final float zetaS;
+
     private final float settleSec;
 
     // Per-frame stash, consumed by the getScaleAndFasterValue hook.
@@ -55,7 +58,8 @@ public final class ScaleComposer {
     private float lastProgress;
 
     public ScaleComposer(float targetW, float targetH,
-            float screenW, float screenH, float s0x, float s0y, float scaleV0) {
+            float screenW, float screenH, float s0x, float s0y,
+            float scaleV0, float targetTopY) {
         this.screenW = screenW;
         this.screenH = screenH;
         float targetAspect = targetW / Math.max(targetH, 1.0f);
@@ -86,9 +90,10 @@ public final class ScaleComposer {
             this.sTo = targetH / screenH;
         }
         this.v0S = scaleV0;
+        this.zetaS = CurveDemoSpring.zetaScaleTargeted(targetTopY, screenH);
         float sw = settleOf(this.wFrom, this.wTo, CurveDemoSpring.zetaWH(), 0f);
         float sh = settleOf(this.hFrom, this.hTo, CurveDemoSpring.zetaWH(), 0f);
-        float ss = settleOf(this.sFrom, this.sTo, CurveDemoSpring.zetaScale(), scaleV0);
+        float ss = settleOf(this.sFrom, this.sTo, zetaS, scaleV0);
         this.settleSec = Math.max(sw, Math.max(sh, ss));
     }
 
@@ -103,7 +108,7 @@ public final class ScaleComposer {
         float t = xn * settleSec;
         float cdW = underDamped(t, wFrom, wTo, CurveDemoSpring.zetaWH(), 0f);
         float cdH = underDamped(t, hFrom, hTo, CurveDemoSpring.zetaWH(), 0f);
-        float cdS = underDamped(t, sFrom, sTo, CurveDemoSpring.zetaScale(), v0S);
+        float cdS = underDamped(t, sFrom, sTo, zetaS, v0S);
         // CD min-scale soft floor (MainPage.xaml.cs:412-415): the Scale
         // spring can undershoot (big RvScale, underdamped) below
         // minScale = min(FromScale, ToScale); CD decays it with a rational
@@ -175,6 +180,7 @@ public final class ScaleComposer {
                 + " h" + hFrom + "->" + hTo
                 + " s" + sFrom + "->" + sTo
                 + " v0S=" + v0S
+                + " zetaS=" + zetaS
                 + " settle=" + (int) settleMillis() + "ms";
     }
 

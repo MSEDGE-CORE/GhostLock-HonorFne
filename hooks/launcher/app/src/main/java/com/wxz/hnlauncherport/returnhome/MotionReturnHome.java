@@ -3,7 +3,6 @@ package com.wxz.hnlauncherport.returnhome;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.graphics.RectF;
-
 import android.view.View;
 import android.view.animation.Interpolator;
 
@@ -779,8 +778,21 @@ public final class MotionReturnHome {
                 int rot;
                 if (path) {
                     rot = liveRot(h);
-                    float speed = screenSpeed(h, isReturnHome, isX, rot);
-                    
+                    // V17 dynamicAdjustSpeedAndParam (:4782-4800): X 初速 =
+                    // 原始 mVelocityX (clamp ±10419), 所有流程一致注入.
+                    // V14 getTransSpeed(z=false) 在 |vy|>2000 时把 X 按
+                    // 2000/|vy| 比例衰减 -> 无图标/胶囊快滑横向速度近乎
+                    // 归零 (普通图标 z=true 不衰减所以正常). z=false 的
+                    // trans X 直读原始 mTransSpeedX (user-view, 与
+                    // screenSpeed z=false 同帧, 仅去掉 2000 比例衰减).
+                    float speed;
+                    if (isX && !isReturnHome) {
+                        speed = XposedHelpers.getFloatField(h, "mTransSpeedX");
+                        speed = Math.max(-10419f, Math.min(10419f, speed));
+                    } else {
+                        speed = screenSpeed(h, isReturnHome, isX, rot);
+                    }
+
                     // rot: 0 竖屏 x1, 1/3 横屏 x0.4 (三目需整体括号,
                     // 否则 * 优先级高于 == 会把 v0 变成常量).
                     v0 = CurveDemoSpring.transV0(speed, isX) * 5f
@@ -862,7 +874,7 @@ public final class MotionReturnHome {
                 float damping;
                 float threshold;
                 if (Port.on(Port.KEY_MOTION_PATH)) {
-                    // 胶囊也走 CurveDemo 曲线 (slot-0 轻快, T = 1.1s),
+                    // 胶囊也走 CurveDemo 曲线 (slot-0 轻快, T = 0.85s),
                     // 仅目标值 (endPos, widenForCapsule) 与阈值不同.
                     stiffness = CurveDemoSpring.stiffness();
                     damping = CurveDemoSpring.damping(CurveDemoSpring.zetaXY());
@@ -951,7 +963,8 @@ public final class MotionReturnHome {
                         composed = true;
                         if (!composerBuilt) {
                             currentComposer = new ScaleComposer(rectF.width(),
-                                    rectF.height(), screen.x, screen.y, s0x, s0y, v0);
+                                    rectF.height(), screen.x, screen.y, s0x, s0y,
+                                    v0, rectF.top);
                             composerBuilt = true;
                             Port.log("MotionScaleCompose " + currentComposer.describe()
                                     + " s0x=" + s0x + " s0y=" + s0y
