@@ -958,7 +958,7 @@ public final class MotionReturnHome {
                     float scaleCur = s0Valid ? s0y : ratio;
                     // capsule cdScale 初速度 x3 (per tuning).
                     v0 = CurveDemoSpring.scaleV0(vy, span, scaleCur) * -5f
-                            * (capsule ? 5f : 1f);
+                            * (capsule ? 6f : 2.4f);
                     if (s0Valid && rectF.width() > 1f && rectF.height() > 1f) {
                         composed = true;
                         if (!composerBuilt) {
