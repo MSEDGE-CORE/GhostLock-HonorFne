@@ -24,14 +24,18 @@
 #   4. verify1 真相(FNE 02:18 kprobe 实证): daemon 失败前只 open 过
 #       /data/adb/zygisksu/.magic, 完全不碰模块文件 —— verify1 = .magic
 #       内容校验, 与 module.prop 无关; 失败路径会用随机值"毒丸化".magic 并
-#       再生新值。唯一已知有效值 = /data/adb/zygisksu.bak/.magic(02:08/02:11
-#       两次实证过 verify1), 必须在起 daemon 前恢复。
+#       再生新值。02:08/02:11 两次以 zygisksu.bak/.magic 通过 verify1。
+#       10/29 反证+修正: zygisksu.bak 已不存在, 用 live 随机值(22B)起
+#       daemon 照样通过 verify1 并完成注入 —— .magic 内容并非已知值才有效,
+#       .bak 恢复降级为"有则恢复", 缺失只提示不判死。
 #   5. RescueParty 才是所谓"荣耀看门狗"(02:42 dumpsys 实证): 每次开机
 #      ~7min 后逐级升级(UNTRUSTED_DEFAULTS→CHANGES→TRUSTED→WARM_REBOOT,
 #      每 12min 一级, ~42min 温重启整机), 23:46 甚至执行过 FACTORY_RESET
 #      级救援(/data 幸存属侥幸)。root 后立即禁用, persist 属性永久止血。
-#   6. 90s 未注入只输出诊断, 不再 kill zygote: FNE 实测 [5/5] 兜底 kill
-#      两次诱发整机硬重启(22:45/23:24), 已移除。
+#   6. kill zygote64 的历史教训与有条件恢复: 旧版 [5/5] 盲目两连 kill 诱发
+#      整机硬重启(22:45/23:24)而移除; 10/29 实证根因是 kill 时 daemon 缺席
+#      (init execve hook 未挂, 纯框架重启)。现仅在 daemon 确认存活(hook
+#      已挂)时 kill 一次: 实测 ~10s 注入落位, 框架软重启 ~1min, 数据无损。
 # 前置: KSU 已就绪(su 0 可用); zygisksu/zygisk_lsposed 模块已挂载。
 # zygote pid 解析必须用 pidof: pgrep -x zygote64 不匹配(comm 为 main),
 # pgrep -f 会误匹配 shell 自身命令行(FNE 实测三者输出互不相同)。
@@ -64,8 +68,30 @@ PRISTINE_B64='aWQ9enlnaXNrc3UKbmFtZT1aeWdpc2sgTmV4dAp2ZXJzaW9uPTEuNS4yICg4NjQtYT
 # 杀旧 daemon + 双还原 module.prop + 清失败标记 + 恢复 .magic + 拉起注入
 # 链(见头部注释 3/4)。daemon 失败会污染 module.prop/失败标记, 每次拉起
 # 前必须全套还原; [3/4] 与 [4/4] 超时重拉共用本函数。
+#
+# 10/29 关键修正: daemon 的唯一拉起入口是 post-fs-data.sh 的
+# `zygiskd daemon`(zygiskd 自 fork: 父进程 setup+hook init 后退出, 子进程
+# prctl 改名 zn-daemon 常驻)。service.sh 的 `zygiskd service-stage` **不会
+# 自启 daemon** —— daemon 缺席时它 RC=1 静默退出。当天实测: chain 的
+# ksud post-fs-data 因彼时模块树损坏报 "./bin/zygiskd: not found"
+# (stage_postfs.log 末行), daemon 从未启动, 老版 relaunch 只跑 service.sh,
+# [4/4] 对着空系统干等 240s 超时 —— "zygote 部署不上"的根因。
+start_daemon() {
+    $T30 adb shell "su 0 sh -c 'sh $MOD/post-fs-data.sh'" >/dev/null 2>&1
+    n=0
+    while [ $n -lt 10 ]; do
+        daemon_alive && return 0
+        sleep 2; n=$((n + 1))
+    done
+    return 1
+}
 relaunch_daemon() {
-    $T30 adb shell "su 0 sh -c 'pkill -9 zn-daemon 2>/dev/null; pkill -9 zygiskd64 2>/dev/null; pkill -9 lspd 2>/dev/null; sleep 1; echo $PRISTINE_B64 | base64 -d > $MOD/module.prop.orig; cp $MOD/module.prop.orig $MOD/module.prop; rm -f /data/adb/zygisksu/.abort_msg /data/adb/zygisksu/.injecting $MOD/disable $MOD/update; if [ -f /data/adb/zygisksu.bak/.magic ]; then cp /data/adb/zygisksu.bak/.magic /data/adb/zygisksu/.magic; chmod 666 /data/adb/zygisksu/.magic; fi; sh $MOD/service.sh'" >/dev/null 2>&1
+    # 已注入且 daemon 存活 = 系统健康, 不重启 daemon(重启会在 init 的
+    # execve/wait4 上叠加第二层 inline hook, 双重 patch 未验证过安全性)
+    if injected && daemon_alive; then return 0; fi
+    $T30 adb shell "su 0 sh -c 'pkill -9 zn-daemon 2>/dev/null; pkill -9 zygiskd64 2>/dev/null; pkill -9 lspd 2>/dev/null; sleep 1; echo $PRISTINE_B64 | base64 -d > $MOD/module.prop.orig; cp $MOD/module.prop.orig $MOD/module.prop; rm -f /data/adb/zygisksu/.abort_msg /data/adb/zygisksu/.injecting $MOD/disable $MOD/update; if [ -f /data/adb/zygisksu.bak/.magic ]; then cp /data/adb/zygisksu.bak/.magic /data/adb/zygisksu/.magic; chmod 666 /data/adb/zygisksu/.magic; fi'" >/dev/null 2>&1
+    start_daemon || echo "      [警告] ZN daemon 启动失败(模块树可能损坏), verify/注入将无法进行"
+    $T30 adb shell "su 0 sh -c 'sh $MOD/service.sh'" >/dev/null 2>&1
 }
 
 echo "      激活 Zygisk/LSPosed 注入..."
@@ -130,44 +156,59 @@ h=$($T15 adb shell "su 0 sha256sum $MOD/module.prop" 2>/dev/null | tr -d '\r' | 
 if [ "$h" != "2f8cdf9a676ed7b8" ]; then
     echo "      [警告] module.prop 还原后哈希异常($h), verify1 大概率失败"
 fi
-if ! $T15 adb shell "su 0 sh -c 'cmp -s /data/adb/zygisksu.bak/.magic /data/adb/zygisksu/.magic'" 2>/dev/null; then
-    echo "      [警告] .magic 未能恢复为已知有效值(zygisksu.bak 缺失或复制失败), verify1 必挂"
+if ! $T15 adb shell "su 0 sh -c '[ -s /data/adb/zygisksu/.magic ]'" 2>/dev/null; then
+    echo "      [警告] /data/adb/zygisksu/.magic 缺失或为空, daemon verify1 可能失败"
 fi
 
-echo "      [4/4] 等待注入落位(最长 240s)..."
-# 90s/150s 实测仍偶发不够(grind_reboot7/9: TRY1 快速过 W2 时 daemon
-# 的 zygote 标记在窗口结束后数秒才落位, 终态全绿但脚本误报未确认)。
+echo "      [4/4] 等待注入落位(最长 120s + 重生接管 180s)..."
+# ZN 1.5.2 的注入机制(10/29 logcat 实证): daemon 启动时 ptrace attach
+# init 并 inline hook 其 execve/wait4, 之后由 init (重)spawn 的 zygote
+# 才会被注入 —— **daemon 不会注入已在跑的 zygote**(zygote_states 恒 0)。
+# 因此两条路径:
+#   a) boot 路径: W1/W2 崩溃重启后 root 落在开机途中, chain/daemon 抢在
+#      zygote spawn 前 hook init, zygote 出生即带模块, 等待自然落位;
+#   b) 干净 root 路径: W2 在已完全开机的系统上一次成功(zygote 早已在跑),
+#      等 120s 也不会落位 —— 必须在 daemon 确认存活(hook 已挂)前提下
+#      kill zygote64 触发 init 重生, execve hook 接住, ~10s 注入落位
+#      (框架软重启约 1min, RescueParty 已禁用, 数据无损)。
+# 安全约束: 仅 daemon 存活时才 kill(无 hook 的 kill 是纯框架重启, 旧版
+# [5/5] 兜底两连 kill 诱发硬重启的根因), 且全程只 kill 一次。
 ok=0
-for i in $(seq 1 48); do
+for i in $(seq 1 24); do
     sleep 5
     if injected; then ok=1; break; fi
-    echo "        ... 第 $((i*5))s, zygote 尚未注入"
 done
 
-# 240s 未确认的兜底(Windows 端 00:34 失败 vs mac 端 00:46 手动重拉全绿的
-# 对照实证): grind 刚结束时 ksud/su 通路未稳, daemon 拉起即退(ksu fd
-# released)且无人重启。按 daemon 状态分流: 活着 = 追加等 60s; 死了 = 等 su
-# 连续 2 次稳定通过后重拉 daemon(重走 [3/4] 全套还原), 再给 120s 窗口。
-if [ $ok -ne 1 ]; then
-    echo "      [4/4] 240s 未确认, 检查 daemon 状态..."
-    if daemon_alive; then
-        echo "        daemon 存活, 追加等待 60s..."
-        for i in $(seq 1 12); do
+if [ $ok -ne 1 ] && daemon_alive; then
+    echo "      [提示] zygote 早于 daemon 启动(干净 root 场景), kill zygote64 触发重生接管..."
+    $T15 adb shell "su 0 sh -c 'kill -9 \$(pidof zygote64) 2>/dev/null'" >/dev/null 2>&1
+    for i in $(seq 1 36); do
+        sleep 5
+        injected && { ok=1; break; }
+    done
+fi
+
+if [ $ok -ne 1 ] && have_root; then
+    # 兜底: daemon 可能已死(chain post-fs-data 失败/daemon 启动失败)。
+    # 等 su 通路连续 2 次稳定后重拉 daemon(重走全套还原), 再给第二窗口。
+    echo "      [4/4] 未落位, 等 su/KSU 通路稳定后重拉 daemon(最长 120s)..."
+    n=0; stable=0
+    while [ $n -lt 24 ]; do
+        if have_root; then stable=$((stable+1)); else stable=0; fi
+        [ $stable -ge 2 ] && break
+        sleep 5; n=$((n+1))
+    done
+    if [ $stable -ge 2 ]; then
+        echo "        通路已稳, 重拉 daemon 并等待第二窗口(最长 180s)..."
+        relaunch_daemon
+        for i in $(seq 1 36); do
             sleep 5
             injected && { ok=1; break; }
         done
-    elif have_root; then
-        echo "        daemon 已退出, 等 su/KSU 通路稳定(连续 2 次通过, 最长 120s)..."
-        n=0; stable=0
-        while [ $n -lt 24 ]; do
-            if have_root; then stable=$((stable+1)); else stable=0; fi
-            [ $stable -ge 2 ] && break
-            sleep 5; n=$((n+1))
-        done
-        if [ $stable -ge 2 ]; then
-            echo "        通路已稳, 重拉 daemon 并等待第二窗口(最长 120s)..."
-            relaunch_daemon
-            for i in $(seq 1 24); do
+        if [ $ok -ne 1 ] && daemon_alive; then
+            echo "        [提示] 仍未见注入, kill zygote64 触发重生接管(仅此一次)..."
+            $T15 adb shell "su 0 sh -c 'kill -9 \$(pidof zygote64) 2>/dev/null'" >/dev/null 2>&1
+            for i in $(seq 1 36); do
                 sleep 5
                 injected && { ok=1; break; }
             done
@@ -182,6 +223,21 @@ if [ $ok -eq 1 ]; then
     $T30 adb shell "su 0 sh -c 'for r in /data/adb/modules/*/sepolicy.rule; do [ -f \"\$r\" ] && $MP --apply \"\$r\" 2>/dev/null; done'" >/dev/null 2>&1
     echo "      Zygisk 注入成功: zygote 已加载 LSPosed zygisk 模块"
     echo "      (lspd 日志: /data/adb/lspd/log/ ; LSPosed 入口在通知栏)"
+
+    # --- lspd 保活 + 作用域进程 rebridge ---
+    # kill zygote64 重生接管路径下框架软重启会带走 lspd(10/29 实测: zygote
+    # 重生后 lspd 死, 桥接无模块列表); 且 [3/4] relaunch 的 pkill lspd 在
+    # boot 路径也会杀掉 chain 起的 lspd。lspd 缺席期间重生的作用域进程
+    # 不会回补 hook, 须: 起回 lspd -> force-stop launcher/aod 让其带 bridge
+    # 重生(10/29 实测 lspd 起回 + force-stop 后 hooks 立即恢复)。
+    if ! $T15 adb shell "su 0 sh -c 'pgrep -f \"^lspd\$\" >/dev/null'" 2>/dev/null; then
+        $T30 adb shell "su 0 sh -c 'sh /data/adb/modules/zygisk_lsposed/service.sh'" >/dev/null 2>&1
+        n=0
+        while [ $n -lt 12 ] && ! $T15 adb shell "su 0 sh -c 'pgrep -f \"^lspd\$\" >/dev/null'" 2>/dev/null; do
+            sleep 5; n=$((n + 1))
+        done
+        $T30 adb shell "su 0 am force-stop com.hihonor.android.launcher; su 0 am force-stop com.hihonor.aod" >/dev/null 2>&1
+    fi
 
     # --- LSPosed 作用域补齐 ---
     # 全新 lspd(配置被清/首次激活)不会自动发现 Xposed 模块: system_server
