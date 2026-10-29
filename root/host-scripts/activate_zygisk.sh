@@ -152,8 +152,13 @@ $T30 adb shell "su 0 sh -c 'for r in /data/adb/modules/*/sepolicy.rule; do [ -f 
 
 echo "      [3/4] 还原 module.prop + 清失败标记并重启注入链..."
 relaunch_daemon
+# 哈希≠pristine 有两种情况(10/29 R1 实证): a) daemon 已成功启动并回写
+# 状态行 description="[✅zygote, ✅zygote_secondary, Root: ✅KernelSU...]"
+# —— 这是成功信号, 不是污染; b) description 嵌入 "[❌...]" 失败标记或
+# 29B 裸标记 —— 真失败。只对 b) 告警。
 h=$($T15 adb shell "su 0 sha256sum $MOD/module.prop" 2>/dev/null | tr -d '\r' | cut -c1-16)
-if [ "$h" != "2f8cdf9a676ed7b8" ]; then
+d=$($T15 adb shell "su 0 sh -c 'grep \"^description=\" $MOD/module.prop 2>/dev/null || head -c 40 $MOD/module.prop'" 2>/dev/null | tr -d '\r')
+if [ "$h" != "2f8cdf9a676ed7b8" ] && ! printf '%s' "$d" | grep -q "✅"; then
     echo "      [警告] module.prop 还原后哈希异常($h), verify1 大概率失败"
 fi
 if ! $T15 adb shell "su 0 sh -c '[ -s /data/adb/zygisksu/.magic ]'" 2>/dev/null; then
@@ -271,17 +276,25 @@ if [ $ok -eq 1 ]; then
             done
             return 1
         }
-        $T30 adb shell "su 0 sh -c 'cp $DB $STG; cp $DB-wal $STG-wal 2>/dev/null; cp $DB-shm $STG-shm 2>/dev/null; chmod 666 $STG*'" >/dev/null 2>&1
-        pull_retry $STG "$W/db"
-        pull_retry $STG-wal "$W/db-wal"
-        pull_retry $STG-shm "$W/db-shm"
-        APK=""
-        for i in 1 2 3; do
-            APK=$($T15 adb shell "pm path com.wxz.hnlauncherport" 2>/dev/null | tr -d '\r' | head -1 | sed 's/^package://')
-            [ -n "$APK" ] && break
-            sleep 3
+        # kill zygote64 重生接管路径下框架软重启(30-60s), system_server
+        # 停摆期间 cp/pull/pm 全空响应, 内层 9s 重试扛不过 —— 外层整体
+        # 重试(最长 ~120s), 等 pm 回来再判定(10/29 R1 实测: 补齐被瞬态
+        # 空响应误跳过, 终态靠 db 残留侥幸成立; 全新 lspd 场景会真漏)。
+        DBOK=0; APK=""
+        for t in $(seq 1 8); do
+            $T30 adb shell "su 0 sh -c 'cp $DB $STG; cp $DB-wal $STG-wal 2>/dev/null; cp $DB-shm $STG-shm 2>/dev/null; chmod 666 $STG*'" >/dev/null 2>&1
+            pull_retry $STG "$W/db"
+            pull_retry $STG-wal "$W/db-wal"
+            pull_retry $STG-shm "$W/db-shm"
+            for i in 1 2 3; do
+                APK=$($T15 adb shell "pm path com.wxz.hnlauncherport" 2>/dev/null | tr -d '\r' | head -1 | sed 's/^package://')
+                [ -n "$APK" ] && break
+                sleep 3
+            done
+            if [ -s "$W/db" ] && [ -n "$APK" ]; then DBOK=1; break; fi
+            sleep 12
         done
-        if [ ! -s "$W/db" ] || [ -z "$APK" ]; then
+        if [ $DBOK -ne 1 ]; then
             echo "      [提示] db 拉取失败或 HnLauncherPort 未安装, 跳过作用域补齐"
         else
             # wal 回放进主文件, 后续只写回 db 本体(设备端删 wal/shm)
