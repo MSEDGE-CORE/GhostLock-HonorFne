@@ -680,7 +680,7 @@ private fun MotionPathDialog(onDismiss: () -> Unit) {
     var zetaWH by remember {
         mutableFloatStateOf(
             Settings.Global.getFloat(
-                context.contentResolver, Port.KEY_MP_ZETA_WH, 0.86f).coerceIn(0.5f, 1.5f))
+                context.contentResolver, Port.KEY_MP_ZETA_WH, 0.82f).coerceIn(0.5f, 1.5f))
     }
 
     fun putF(key: String, v: Float): Boolean {
@@ -698,7 +698,7 @@ private fun MotionPathDialog(onDismiss: () -> Unit) {
                     inertia = 1f
                     zetaXY = 0.86f
                     zetaScale = 0.86f
-                    zetaWH = 0.86f
+                    zetaWH = 0.82f
                 }) {
                     Icon(Icons.Filled.RestartAlt, contentDescription = "恢复默认")
                 }
@@ -737,6 +737,8 @@ private fun MotionPathDialog(onDismiss: () -> Unit) {
                         steps = 19,
                         onValueChange = { dur = it }
                     )
+                }
+                if (styleSel == 3) {
                     Spacer(Modifier.height(12.dp))
                     Text("惯性系数：" + String.format("%.2f", inertia))
                     Slider(
@@ -745,8 +747,6 @@ private fun MotionPathDialog(onDismiss: () -> Unit) {
                         steps = 19,
                         onValueChange = { inertia = it }
                     )
-                }
-                if (styleSel == 3) {
                     Spacer(Modifier.height(12.dp))
                     Text("平移弹簧：" + String.format("%.2f", zetaXY))
                     Slider(
@@ -786,11 +786,11 @@ private fun MotionPathDialog(onDismiss: () -> Unit) {
                         Settings.Global.putInt(
                             context.contentResolver, Port.KEY_MP_STYLE, styleIdx)
                 if (styleSel != 0) {
-                    ok = ok && putF(Port.KEY_MP_DURATION, dur) &&
-                            putF(Port.KEY_MP_INERTIA, inertia)
+                    ok = ok && putF(Port.KEY_MP_DURATION, dur)
                 }
                 if (styleSel == 3) {
-                    ok = ok && putF(Port.KEY_MP_ZETA_XY, zetaXY) &&
+                    ok = ok && putF(Port.KEY_MP_INERTIA, inertia) &&
+                            putF(Port.KEY_MP_ZETA_XY, zetaXY) &&
                             putF(Port.KEY_MP_ZETA_SCALE, zetaScale) &&
                             putF(Port.KEY_MP_ZETA_WH, zetaWH)
                 }

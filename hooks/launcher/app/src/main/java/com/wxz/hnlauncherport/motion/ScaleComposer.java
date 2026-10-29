@@ -49,6 +49,9 @@ public final class ScaleComposer {
     /** 漂浮风格: 随目标 Y 插值的 scale zeta (构建时定, 逐帧恒定). */
     private final float zetaS;
 
+    /** capsule: 强制点目标语义的 0.1 软地板 (per tuning). */
+    private final boolean softFloor;
+
     private final float settleSec;
 
     // Per-frame stash, consumed by the getScaleAndFasterValue hook.
@@ -60,6 +63,13 @@ public final class ScaleComposer {
     public ScaleComposer(float targetW, float targetH,
             float screenW, float screenH, float s0x, float s0y,
             float scaleV0, float targetTopY) {
+        this(targetW, targetH, screenW, screenH, s0x, s0y,
+                scaleV0, targetTopY, false);
+    }
+
+    public ScaleComposer(float targetW, float targetH,
+            float screenW, float screenH, float s0x, float s0y,
+            float scaleV0, float targetTopY, boolean softFloor) {
         this.screenW = screenW;
         this.screenH = screenH;
         float targetAspect = targetW / Math.max(targetH, 1.0f);
@@ -90,6 +100,7 @@ public final class ScaleComposer {
             this.sTo = targetH / screenH;
         }
         this.v0S = scaleV0;
+        this.softFloor = softFloor;
         this.zetaS = CurveDemoSpring.zetaScaleTargeted(targetTopY, screenH);
         float sw = settleOf(this.wFrom, this.wTo, CurveDemoSpring.zetaWH(), 0f);
         float sh = settleOf(this.hFrom, this.hTo, CurveDemoSpring.zetaWH(), 0f);
@@ -106,16 +117,21 @@ public final class ScaleComposer {
     public float eval(float x) {
         float xn = clamp(x, 0f, 1f);
         float t = xn * settleSec;
-        float cdW = underDamped(t, wFrom, wTo, CurveDemoSpring.zetaWH(), 0f);
-        float cdH = underDamped(t, hFrom, hTo, CurveDemoSpring.zetaWH(), 0f);
+        // CD Width/Height 弹簧 Math.Max(0, ...) (MainPage.xaml.cs:423-424):
+        // 目标 0 (无图标点目标) 时下冲负值 = 镜像, 钳 0.
+        float cdW = Math.max(0f, underDamped(t, wFrom, wTo, CurveDemoSpring.zetaWH(), 0f));
+        float cdH = Math.max(0f, underDamped(t, hFrom, hTo, CurveDemoSpring.zetaWH(), 0f));
         float cdS = underDamped(t, sFrom, sTo, zetaS, v0S);
-        // CD min-scale soft floor (MainPage.xaml.cs:412-415): the Scale
-        // spring can undershoot (big RvScale, underdamped) below
-        // minScale = min(FromScale, ToScale); CD decays it with a rational
-        // asymptote s' = minScale - a*(1 - 1/(|s-minScale|/a + 1)), a =
-        // minScale - continuous at minScale, asymptotic floor 0, never
-        // negative (a negative composed scale would mirror the window).
-        float minScale = Math.min(sFrom, sTo);
+        // CD min-scale soft floor (MainPage.xaml.cs:410-417): 点目标
+        // (sTo*screenW <= 4, 无图标) 地板 0.1 (窗口渐近缩到 10%,
+        // 不是 0); 有尺寸目标时 min(FromScale, ToScale). capsule 按
+        // tuning 强制 0.1 软地板 (softFloor). Scale 弹簧
+        // 下冲 (大 RvScale, 欠阻尼) 低于地板时用有理渐近衰减
+        // s' = minScale - a*(1 - 1/(|s-minScale|/a + 1)), a = minScale
+        // - 在地板处连续, 渐近下界 minScale - a, 永不负 (负 scale
+        // 会镜像窗口).
+        float minScale = (softFloor || sTo * screenW <= 4f)
+                ? 0.1f : Math.min(sFrom, sTo);
         if (cdS < minScale) {
             double a = minScale;
             cdS = (float) (minScale - a * (1.0

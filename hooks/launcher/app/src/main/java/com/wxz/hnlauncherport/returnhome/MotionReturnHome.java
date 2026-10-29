@@ -129,6 +129,9 @@ public final class MotionReturnHome {
     private static final WeakHashMap<Object, ScaleComposer> COMPOSED = new WeakHashMap<>();
     private static ScaleComposer currentComposer;
     private static boolean composerBuilt;
+
+    /** path 模式本手势 trans 弹簧的 CD 可见 settle 时长 (ms, X/Y 取 max). */
+    private static volatile long pathTransSettleMs = 0L;
     private static float s0x = 1f;
     private static float s0y = 1f;
     private static boolean s0Valid;
@@ -196,6 +199,7 @@ public final class MotionReturnHome {
                             // reset 每次手势的组合器状态.
                             currentComposer = null;
                             composerBuilt = false;
+                            pathTransSettleMs = 0L;
                             RectF fromRaw = (RectF) param.args[1];
                             RectF fromP = fromRaw;
                             if (rot != 0 && fromRaw != null && !fromRaw.isEmpty()) {
@@ -467,11 +471,34 @@ public final class MotionReturnHome {
                                 if (!motionEnabled()) {
                                     return;
                                 }
+                                // CD 实际弹簧时长: path 开时回桌动画时长
+                                // = max(trans X/Y 弹簧 settle, 组合器
+                                // settle) (GetSpringAnimationVisibleTick
+                                // 0.1% 语义, 随滑条 tSeconds 缩放), 无
+                                // 组合器/采样时退回 900ms x 系数兜底.
+                                if (Port.on(Port.KEY_MOTION_PATH)) {
+                                    long d = pathTransSettleMs;
+                                    ScaleComposer c = currentComposer;
+                                    if (c != null) {
+                                        d = Math.max(d, (long) c.settleMillis());
+                                    }
+                                    if (d <= 0L) {
+                                        d = CurveDemoSpring.homeAnimDurationMs();
+                                    }
+                                    param.setResult(d);
+                                    lastHomeDurMs = d;
+                                    Port.log("MotionDur dur=" + d
+                                            + " transSettle=" + pathTransSettleMs
+                                            + " composeSettle="
+                                            + (c == null ? "-" : (int) c.settleMillis())
+                                            + " z=" + param.args[2]);
+                                    return;
+                                }
                                 // CD target=-1 fade: stash the return-home
                                 // animator duration for the no-icon elapsed
                                 // reconstruction (installFadeHooks).
                                 Object dur = param.getResult();
-                                if (Port.on(Port.KEY_MOTION_PATH) && dur instanceof Number) {
+                                if (dur instanceof Number) {
                                     lastHomeDurMs = ((Number) dur).longValue();
                                 }
                                 Port.log("MotionDur dur=" + param.getResult()
@@ -778,25 +805,34 @@ public final class MotionReturnHome {
                 int rot;
                 if (path) {
                     rot = liveRot(h);
-                    // V17 dynamicAdjustSpeedAndParam (:4782-4800): X 初速 =
-                    // 原始 mVelocityX (clamp ±10419), 所有流程一致注入.
-                    // V14 getTransSpeed(z=false) 在 |vy|>2000 时把 X 按
-                    // 2000/|vy| 比例衰减 -> 无图标/胶囊快滑横向速度近乎
-                    // 归零 (普通图标 z=true 不衰减所以正常). z=false 的
-                    // trans X 直读原始 mTransSpeedX (user-view, 与
-                    // screenSpeed z=false 同帧, 仅去掉 2000 比例衰减).
+                    // 速度全量放开 (不限 max):
+                    //  - 无图标/胶囊 (z=false): 宿主 getTransSpeed 把 X 按
+                    //    2000/|vy| 比例衰减, Y sign-cap ±2000 -> 直读原始
+                    //    mTransSpeedX/Y (user-view, 与 screenSpeed z=false
+                    //    同帧, 仅去衰减/封顶).
+                    //  - 图标 (z=true): getTransSpeed 本就无封顶, 走
+                    //    screenSpeed (保留横屏 rot 映射).
                     float speed;
-                    if (isX && !isReturnHome) {
-                        speed = XposedHelpers.getFloatField(h, "mTransSpeedX");
-                        speed = Math.max(-10419f, Math.min(10419f, speed));
+                    if (!isReturnHome) {
+                        speed = XposedHelpers.getFloatField(h,
+                                isX ? "mTransSpeedX" : "mTransSpeedY");
                     } else {
-                        speed = screenSpeed(h, isReturnHome, isX, rot);
+                        speed = screenSpeed(h, true, isX, rot);
                     }
 
-                    // rot: 0 竖屏 x1, 1/3 横屏 x0.4 (三目需整体括号,
-                    // 否则 * 优先级高于 == 会把 v0 变成常量).
+                    // rot: 0 竖屏 x1, 1/3 横屏 x0.4
+                    // 注意: transHook 签名 (from, to, isReturnHome),
+                    // args[1] 是 RectF 不是 Boolean (图标语义 = isReturnHome).
                     v0 = CurveDemoSpring.transV0(speed, isX) * 5f
                             * (rot == 0 ? 1f : 0.4f);
+                    // CD 实际弹簧 settle (GetSpringAnimationVisibleTick
+                    // 0.1% 阈值): 回桌时长按 X/Y 弹簧真实 settle 取 max,
+                    // 与组合器 settle 一起决定动画时长 (不再定长).
+                    long settleMs = (long) (CurveDemoSpring.springSettle(
+                            0f, endPos, CurveDemoSpring.zetaXY(), v0) * 1000f);
+                    if (settleMs > pathTransSettleMs) {
+                        pathTransSettleMs = settleMs;
+                    }
                 } else if (curveLive) {
                     // v7.5 landscape: curveVelX/Y are the card's VISUAL
                     // velocity. The icon (z) consumer is the PANEL
@@ -947,24 +983,47 @@ public final class MotionReturnHome {
                     // (X/Y 两个 hook 共享, Y 先调用).
                     rot = liveRot(h);
                     // z=true 的 getTransSpeed 是未封顶原始值 (可达 -150k
-                    // px/s, v0S 达行程的 ~100 倍 -> S 俯冲后反向弹回 =
-                    // 卡片 cdScaleY 反转). 宿主自己的 scale 链先
-                    // boundToRange(+-11000) (getScaleSpringInterpolatorY),
-                    // 同款封顶.
-                    float vyRaw = screenSpeed(h, isIcon, false, rot);
-                    float vy = Math.max(-11000f, Math.min(11000f, vyRaw));
+                    // px/s); 不设 max 封顶, 全量传递.
+                    // 无图标/capsule (z=false): 宿主 getTransSpeed 把 Y
+                    // sign-cap ±2000 -> 直读原始 mTransSpeedY (与
+                    // screenSpeed !flag 分支同空间, 仅去封顶; trans X
+                    // 修复同思路).
+                    float vy = isIcon
+                            ? screenSpeed(h, true, false, rot)
+                            : XposedHelpers.getFloatField(h, "mTransSpeedY");
                     // CD RvScale 的 scaleCur = 松手时实际 scale (AWGScale.
                     // ScaleY), 即 s0; 退化兜底用目标 ratio.
                     float scaleCur = s0Valid ? s0y : ratio;
                     // capsule cdScale 初速度 x3 (per tuning).
-                    v0 = CurveDemoSpring.scaleV0(vy, span, scaleCur) * -5f
-                            * (capsule ? 6f : 2.4f);
-                    if (s0Valid && rectF.width() > 1f && rectF.height() > 1f) {
+                    v0 = (CurveDemoSpring.scaleV0(vy, span, scaleCur) * -5f);
+                    // 无图标 (退化点目标 w/h=0) 也建组合器: 单弹簧兜底
+                    // 没有 CD 的 minScale 软地板 (MainPage.xaml.cs:410-
+                    // 417, 点目标地板 0.1 + W/H Math.Max(0,...)), 速度
+                    // 全量放开后 v0 可俯冲负值 -> 窗口闪大/镜像.
+                    // 组合器对退化目标 sTo=0 的地板按 CD 取 0.1.
+                    if (s0Valid && rectF != null) {
                         composed = true;
                         if (!composerBuilt) {
-                            currentComposer = new ScaleComposer(rectF.width(),
-                                    rectF.height(), screen.x, screen.y, s0x, s0y,
-                                    v0, rectF.top);
+                            // 无图标与胶囊容器一致: z=false 统一 softFloor
+                            // 0.1 软地板. 无图标目标改屏幕同纵横比 (0.01xW,
+                            // 0.01xH): case A 中 wTo=targetAspect*screenH
+                            // = screenW, hTo = screenH -> W/H 双弹簧静止,
+                            // 视觉 scale (消费端取 stash[0]=cdW/W*cdS) 退化为
+                            // 纯 S 弹簧 (sTo=0.01, 0.1 软地板) - 与胶囊 case B
+                            // 同源. 原 targetW=0 会让 W 弹簧 (1080->0) 半周期
+                            // (~0.24s) 下穿被 max(0,..) 钳 0 -> sx=0, 窗口在
+                            // alpha~0.5 时瞬间消失 (消费端 lambda$3 :1497
+                            // setScaleX/Y(f8) 统一取 [0], 地板只护 cdS 不护
+                            // 组合 sx) - "中途突然消失"根因.
+                            float targetW = rectF.width();
+                            float targetH = rectF.height();
+                            if (!isIcon && !capsule) {
+                                targetW = 0.01f * screen.x;
+                                targetH = 0.01f * screen.y;
+                            }
+                            currentComposer = new ScaleComposer(targetW,
+                                    targetH, screen.x, screen.y, s0x, s0y,
+                                    v0, rectF.top, !isIcon);
                             composerBuilt = true;
                             Port.log("MotionScaleCompose " + currentComposer.describe()
                                     + " s0x=" + s0x + " s0y=" + s0y
@@ -1013,10 +1072,11 @@ public final class MotionReturnHome {
                 float damping;
                 float threshold;
                 if (path) {
-                    // 胶囊也走 CurveDemo 曲线, 仅目标值 (endPos) 与阈值不同.
+                    // 胶囊与无图标参数一致 (per tuning): z=false 统一
+                    // CAPSULE_VALUE_THRESHOLD 0.003, 图标保持 5e-4.
                     stiffness = CurveDemoSpring.stiffness();
                     damping = CurveDemoSpring.damping(CurveDemoSpring.zetaScale());
-                    threshold = capsule ? MotionParams.CAPSULE_VALUE_THRESHOLD : 5.0e-4f;
+                    threshold = isIcon ? 5.0e-4f : MotionParams.CAPSULE_VALUE_THRESHOLD;
                 } else if (capsule) {
                     stiffness = MotionParams.CAPSULE_SCALE_STIFFNESS;
                     damping = MotionParams.CAPSULE_SCALE_DAMPING;

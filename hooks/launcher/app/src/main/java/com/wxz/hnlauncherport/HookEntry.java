@@ -142,10 +142,11 @@ public class HookEntry implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             Port.log("IconBackAdaptiveIcon install failed", t);
         }
-        try {
-            com.wxz.hnlauncherport.launch.LaunchSpringTune.install(lpparam.classLoader);
-        } catch (Throwable t) {
-            Port.log("LaunchSpringTune install failed", t);
-        }
+        // 打开动画不走 CD，暂停注册
+        // try {
+        //     com.wxz.hnlauncherport.launch.LaunchSpringTune.install(lpparam.classLoader);
+        // } catch (Throwable t) {
+        //     Port.log("LaunchSpringTune install failed", t);
+        // }
     }
 }

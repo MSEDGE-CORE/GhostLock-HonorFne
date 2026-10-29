@@ -7,13 +7,15 @@ import com.wxz.hnlauncherport.Port;
  * slot-0 curve ("轻快") with the default duration, ported onto honor's
  * SpringInterpolator:
  *
- *   w = 4*PI / T  (T = 0.85s, TransitionDurationTime default 1.0)
+ *   w = 4*PI / T  (T = 回桌分支基线: 轻快 1.1s / 漂浮 1.0s /
+ *                  自定义 = 时长滑条; MainPage.xaml.cs:1207/:1220/:1232,
+ *                  TransitionDurationTime default 1.0)
  *   k = w^2, c = 2*zeta*w
  *   (honor SpringModelBase: x'' + c*x' + k*x = 0, m = 1)
  *
  * Per-axis zeta (slot-0; rotation excluded from the port):
- *   X / Y / Scale   0.82
- *   Width / Height  0.9
+ *   X / Y / Scale   0.86
+ *   Width / Height  0.82
  *   Corner          1.0 (CurveDemo CornerRadiusDamping default)
  *   Opacity         1.0 (begin 0.1T / duration 0.3T, not spring-ported)
  * Launch v0 = 0; gesture-handoff v0 is supplied by the caller.
@@ -22,11 +24,9 @@ import com.wxz.hnlauncherport.Port;
  */
 public final class CurveDemoSpring {
 
-    public static final float T_SECONDS = 0.85f;
-    public static final float W = (float) (4.0 * Math.PI / T_SECONDS);
     public static final float ZETA_XY = 0.86f;
     public static final float ZETA_SCALE = 0.86f;
-    public static final float ZETA_WH = 0.86f;
+    public static final float ZETA_WH = 0.82f;
     public static final float ZETA_CORNER = 1.0f;
 
     // ---- 曲线风格 (MotionPathDialog radio, Settings.Global) ----
@@ -43,9 +43,26 @@ public final class CurveDemoSpring {
 
     // ---- 曲线自定义 (仅 "自定义弹簧" 风格, MotionPathDialog, Settings.Global) ----
 
-    /** T = 基线时长 * 时长系数 (0.8-1.5, 默认 1.0)。path 开即生效 (含预设)。 */
+    /**
+     * CD 回桌分支 (RvScale != 0, MainPage.xaml.cs:1207/:1220/:1232) 的
+     * durationTick 基线: CurveStyle 0 (轻快) = 1.1 x TDT, CurveStyle 1
+     * (漂浮) = 1.0 x TDT, CurveStyle 2 (自定义) = DurationTime x TDT
+     * (滑条即 T)。
+     */
+    private static float baseT() {
+        switch (style()) {
+            case 0:
+                return 1.1f;
+            case 1:
+                return 1.0f;
+            default:
+                return 1.0f;
+        }
+    }
+
+    /** T = 风格基线 (1.1/1.0) x 时长系数 (0.8-1.5, 默认 1.0)。path 开即生效。 */
     public static float tSeconds() {
-        return T_SECONDS * (Port.on(Port.KEY_MOTION_PATH)
+        return baseT() * (Port.on(Port.KEY_MOTION_PATH)
                 ? Port.getFloat(Port.KEY_MP_DURATION, 1.0f) : 1.0f);
     }
 
@@ -83,10 +100,22 @@ public final class CurveDemoSpring {
         return zetaScale();
     }
 
-    /** 惯性系数 (0-10, 默认 1): 乘在 transV0/scaleV0 上。path 开即生效 (含预设)。 */
+    /**
+     * 惯性系数 (0-10, 默认 1): 乘在 transV0/scaleV0 上。仅 "自定义弹簧"
+     * 风格生效 (CD XVelocity/YVelocity/ScaleVelocity, MainPage.xaml.cs:
+     * 1073-1075, 仅 CurveStyle==2); 轻快/漂浮恒 1。
+     */
     public static float inertia() {
-        return Port.on(Port.KEY_MOTION_PATH)
-                ? Port.getFloat(Port.KEY_MP_INERTIA, 1.0f) : 1.0f;
+        return custom() ? Port.getFloat(Port.KEY_MP_INERTIA, 1.0f) : 1.0f;
+    }
+
+    /**
+     * 回桌动画统一时长 (ms): 900 基线 x 时长系数 (随滑条, CD 定长语义,
+     * 与目标/速度无关; 弹簧按 fraction 求值, 变长只整体重定时).
+     */
+    public static long homeAnimDurationMs() {
+        return Math.round(900f * (Port.on(Port.KEY_MOTION_PATH)
+                ? Port.getFloat(Port.KEY_MP_DURATION, 1.0f) : 1.0f));
     }
 
     // Gesture-handoff transfer (MainPage.xaml.cs:2384-2386): finger speed
@@ -126,22 +155,23 @@ public final class CurveDemoSpring {
     }
 
     /**
-     * CD isLaunching=false (StartWindowAnimation isOnLaunching==0),
-     * target=-1 fade (MainPage.xaml.cs:1283+, slot-0): opacity begins at
-     * 0.1*TDT and springs (OpacityDamping 1.0, critically damped) 1 -> 0,
-     * frame application :425. Per tuning the fade is extended to the
-     * animation end t = T_SECONDS (0.85s): the spring spans
-     * [0.1*TDT, T_SECONDS] and settles exactly at the end.
+     * CD target=-1 (无图标) fade (MainPage.xaml.cs, RvScale != 0 分支):
+     * opacity 在 0.1*TDT 后开始, 以独立于运动时长 T 的淡出窗
+     * OpacityDurationTick = 0.5*TDT (轻快/漂浮固定 0.5; 自定义读
+     * OpacityDurationTime 设置, 本移植无透明度滑条, 沿用 0.5),
+     * OpacityDamping 1.0 临界阻尼 1 -> 0 (帧应用 :425):
+     *   alpha(t) = (1 + w t) e^{-w t},  w = 4*PI / (0.5*TDT)。
      */
     public static final float OPACITY_BEGIN_S = 0.1f * TRANSITION_DURATION;
 
-    /** CD target=-1 fade: zeta-1.0 spring 1 -> 0 after OPACITY_BEGIN_S. */
     public static float fadeOutAlpha(float elapsedSec) {
-        float t = elapsedSec - OPACITY_BEGIN_S;
+        float coeff = Port.on(Port.KEY_MOTION_PATH)
+                ? Port.getFloat(Port.KEY_MP_DURATION, 1.0f) : 1.0f;
+        float t = elapsedSec - 0.1f * coeff;
         if (t <= 0f) {
             return 1f;
         }
-        double dur = Math.max(0.05f, tSeconds() - OPACITY_BEGIN_S);
+        double dur = Math.max(0.05, 0.5 * coeff);
         double w = 4.0 * Math.PI / dur;
         double v = (1.0 + w * t) * Math.exp(-w * t);
         return (float) Math.max(0.0, Math.min(1.0, v));
@@ -196,37 +226,36 @@ public final class CurveDemoSpring {
 
     /**
      * Visible-settle estimate (CurveDemo GetSpringAnimationVisibleTick,
-     * 0.1% threshold) for ANY damping regime.
+     * MainPage.xaml.cs:154-200, 0.1% threshold), ANY damping regime.
+     * CD 欠阻尼分支算出含 v0 的包络 A0 后直接丢弃 ("为了简洁, 直接返回
+     * tVisible"): settle = -ln(0.001)/(zeta*w) 是与振幅/速度无关的常量
+     * (zeta 0.86, T 0.85 -> 543ms), 早松手大 v0 不会拉长时长; 之前的物理
+     * 包络版 (ln(amp/eps)/rate) 会随 v0 涨到 1.4s+ - 非 CD 语义.
      */
     public static float springSettle(float from, float to,
             float zeta, float v0) {
-        float omega = omega();
         float a = from - to;
-        if (Math.abs(a) < 1.0e-4f && Math.abs(v0) < 1.0e-4f) {
+        if (Math.abs(a) < 1.0e-12f && Math.abs(v0) < 1.0e-12f) {
             return 0f;
         }
-        double eps = 0.001 * Math.max(Math.abs(a), 0.01);
+        double ln = Math.log(1000.0);
         double zz = (double) zeta * zeta;
-        double amp;
-        double rate;
+        double t;
         if (zz < 1.0) {
-            float omegaD = omega * (float) Math.sqrt(1.0 - zz);
-            float b = (v0 + zeta * omega * a) / omegaD;
-            amp = Math.sqrt((double) a * a + (double) b * b);
-            rate = (double) zeta * omega;
-        } else if (zz <= 1.0001) {
-            amp = Math.max(Math.abs(a), Math.abs(v0 + omega * a) / (double) omega);
-            rate = omega;
+            double dampingW = (double) zeta * omega();
+            if (dampingW < 1.0e-12) {
+                return tSeconds() * 10f;
+            }
+            t = ln / dampingW;
         } else {
-            double s = Math.sqrt(zz - 1.0);
-            double r1 = -omega * (zeta - s);
-            double r2 = -omega * (zeta + s);
-            double c1 = (v0 - a * r2) / (r1 - r2);
-            double c2 = a - c1;
-            amp = Math.max(Math.abs(c1), Math.abs(c2));
-            rate = -r1; // slow root governs the envelope
+            double effectiveW = zz > 1.0001
+                    ? omega() * (zeta - Math.sqrt(zz - 1.0))
+                    : omega();
+            if (effectiveW < 1.0e-12) {
+                return tSeconds() * 2f;
+            }
+            t = ln / effectiveW * 1.5;
         }
-        double t = Math.log(amp / eps) / rate;
         return (float) Math.max(t, 0.05);
     }
 
