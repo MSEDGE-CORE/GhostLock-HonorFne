@@ -40,6 +40,7 @@ import de.robv.android.xposed.XposedHelpers;
 public final class ParallelClick {
     private static final String HN_LAUNCHER = "com.hihonor.android.launcher.HnLauncher";
     private static final String GAC = "com.hihonor.android.launcher.quickstep.breakanim.GestureAnimationController";
+    private static final String ALA = "com.hihonor.android.launcher.quickstep.anim.AppLaunchAnimation";
 
     public static void install(ClassLoader cl) {
         try {
@@ -108,6 +109,24 @@ public final class ParallelClick {
                             param.setResult(Boolean.TRUE);
                         }
                     });
+            // 启动动画图标/窗口 alpha 端点强制 0.03/0.06 (非 MAGIC5 默认):
+            // canBreak (:391) 以 progress > sIconAnimationAlphaEndPoint 为可打断
+            // 判据, MAGIC5/云端配置把端点抬到 0.1/0.2 会让可打断窗推迟 3 倍进度;
+            // 归属本开关, 关闭时保持 stock (launcher 重启后还原).
+            Class<?> ala = XposedHelpers.findClass(ALA, cl);
+            if (Port.on(Port.KEY_PARALLEL)) {
+                forceAlphaEndpoints(ala);
+            }
+            // 云端参数 (updateAppLaunchAnimPara :1136) 会覆盖端点, 之后重压.
+            XposedHelpers.findAndHookMethod(ala, "updateAppLaunchAnimPara", new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            if (!Port.on(Port.KEY_PARALLEL)) {
+                                return;
+                            }
+                            forceAlphaEndpoints(ala);
+                        }
+                    });
             Port.log("ParallelClick installed (seq-switch + canBreak)");
         } catch (Throwable t) {
             Port.log("ParallelClick install failed", t);
@@ -154,6 +173,29 @@ public final class ParallelClick {
             Port.log("SeqSwitch launchInFlight probe failed", t);
             return false;
         }
+    }
+
+    /**
+     * 启动动画 alpha 端点强制 0.03/0.06 (图标淡出 + 窗口淡入同窗):
+     * sIconAnimationAlphaStartPoint/EndPoint + sWindowAnimationAlphaStartPoint/
+     * EndPoint (AppLaunchAnimation static, 静态块 :165-171 与云端覆盖 :1162-1169).
+     */
+    private static void forceAlphaEndpoints(Class<?> ala) {
+        try {
+            setStaticFloat(ala, "sIconAnimationAlphaStartPoint", 0.03f);
+            setStaticFloat(ala, "sIconAnimationAlphaEndPoint", 0.06f);
+            setStaticFloat(ala, "sWindowAnimationAlphaStartPoint", 0.03f);
+            setStaticFloat(ala, "sWindowAnimationAlphaEndPoint", 0.06f);
+            Port.log("SeqSwitch alpha endpoints forced 0.03/0.06");
+        } catch (Throwable t) {
+            Port.log("SeqSwitch alpha force failed", t);
+        }
+    }
+
+    private static void setStaticFloat(Class<?> c, String name, float v) throws Exception {
+        java.lang.reflect.Field f = c.getDeclaredField(name);
+        f.setAccessible(true);
+        f.setFloat(null, v);
     }
 
     private ParallelClick() {}
