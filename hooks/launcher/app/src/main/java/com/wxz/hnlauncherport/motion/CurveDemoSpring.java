@@ -134,7 +134,7 @@ public final class CurveDemoSpring {
      */
     public static float scaleV0(float vyPxPerSec, float screenSpan, float scaleCur) {
         float s = Math.max(scaleCur, 0.05f);
-        return (float) (Math.abs(vyPxPerSec) * (1.0 - FAR_POINT)
+        return (float) (Math.abs(vyPxPerSec) * (1.0 - FAR_POINT) * 5.0
                 / (screenSpan * s) / 30.0 * FLY_FAR
                 / Math.sqrt(TRANSITION_DURATION)) * inertia();
     }
@@ -150,17 +150,15 @@ public final class CurveDemoSpring {
         double t = Math.sqrt(TRANSITION_DURATION);
         double v = vPxPerSec;
         return (float) (isX
-                ? v * FLY_FAR / (20.0 * t)
-                : v * (0.5 - FAR_POINT) / (1.0 - FAR_POINT) / 30.0 * FLY_FAR / t * 1.3) * inertia();
+                ? v * 2.0 * FLY_FAR / (20.0 * t)
+                : v * 5.0 * (0.5 - FAR_POINT) / (1.0 - FAR_POINT) / 30.0 * FLY_FAR / t * 1.3) * inertia();
     }
 
     /**
      * CD target=-1 (无图标) fade (MainPage.xaml.cs, RvScale != 0 分支):
-     * opacity 在 0.1*TDT 后开始, 以独立于运动时长 T 的淡出窗
-     * OpacityDurationTick = 0.5*TDT (轻快/漂浮固定 0.5; 自定义读
-     * OpacityDurationTime 设置, 本移植无透明度滑条, 沿用 0.5),
+     * opacity 在 0.1*coeff 后开始, 淡出窗 0.6*coeff (per tuning),
      * OpacityDamping 1.0 临界阻尼 1 -> 0 (帧应用 :425):
-     *   alpha(t) = (1 + w t) e^{-w t},  w = 4*PI / (0.5*TDT)。
+     *   alpha(t) = (1 + w t) e^{-w t},  w = 4*PI / (0.6*coeff)。
      */
     public static final float OPACITY_BEGIN_S = 0.1f * TRANSITION_DURATION;
 
@@ -171,7 +169,7 @@ public final class CurveDemoSpring {
         if (t <= 0f) {
             return 1f;
         }
-        double dur = Math.max(0.05, 0.5 * coeff);
+        double dur = Math.max(0.05, 0.6 * coeff);
         double w = 4.0 * Math.PI / dur;
         double v = (1.0 + w * t) * Math.exp(-w * t);
         return (float) Math.max(0.0, Math.min(1.0, v));

@@ -424,6 +424,10 @@ public final class MotionReturnHome {
                             //         + " s=" + param.args[2]
                             //         + " frac=" + param.args[5]
                             //         + " pv=" + param.args[6] + "," + param.args[7]);
+                            Port.log("MotionReverse tx=" + param.args[0]
+                                    + " ty=" + param.args[1]
+                                    + " s=" + param.args[2]
+                                    + " frac=" + param.args[5]);
                             }
                         });
             }
@@ -444,15 +448,13 @@ public final class MotionReturnHome {
                             return;
                         }
                         try {
-                            // Port.log("MotionLeash tx=" + XposedHelpers.getFloatField(p, "mTransX")
-                            //         + " ty=" + XposedHelpers.getFloatField(p, "mTransY")
-                            //         + " sx=" + XposedHelpers.getFloatField(p, "mScaleX")
-                            //         + " sy=" + XposedHelpers.getFloatField(p, "mScaleY")
-                            //         + " pv=" + XposedHelpers.getFloatField(p, "mPivotX")
-                            //         + "," + XposedHelpers.getFloatField(p, "mPivotY")
-                            //         + " a=" + XposedHelpers.getFloatField(p, "mCurAlpha"));
+                            Port.log("MotionLeash tx=" + XposedHelpers.getFloatField(p, "mTransX")
+                                    + " ty=" + XposedHelpers.getFloatField(p, "mTransY")
+                                    + " sx=" + XposedHelpers.getFloatField(p, "mScaleX")
+                                    + " sy=" + XposedHelpers.getFloatField(p, "mScaleY")
+                                    + " a=" + XposedHelpers.getFloatField(p, "mCurAlpha"));
                         } catch (Throwable t) {
-                            // Port.log("MotionLeash dump failed", t);
+                            Port.log("MotionLeash dump failed", t);
                         }
                     }
                 });
@@ -823,7 +825,7 @@ public final class MotionReturnHome {
                     // rot: 0 竖屏 x1, 1/3 横屏 x0.4
                     // 注意: transHook 签名 (from, to, isReturnHome),
                     // args[1] 是 RectF 不是 Boolean (图标语义 = isReturnHome).
-                    v0 = CurveDemoSpring.transV0(speed, isX) * 5f
+                    v0 = CurveDemoSpring.transV0(speed, isX) * 1f
                             * (rot == 0 ? 1f : 0.4f);
                     // CD 实际弹簧 settle (GetSpringAnimationVisibleTick
                     // 0.1% 阈值): 回桌时长按 X/Y 弹簧真实 settle 取 max,
@@ -995,7 +997,7 @@ public final class MotionReturnHome {
                     // ScaleY), 即 s0; 退化兜底用目标 ratio.
                     float scaleCur = s0Valid ? s0y : ratio;
                     // capsule cdScale 初速度 x3 (per tuning).
-                    v0 = (CurveDemoSpring.scaleV0(vy, span, scaleCur) * -5f);
+                    v0 = (CurveDemoSpring.scaleV0(vy, span, scaleCur) * -1f);
                     // 无图标 (退化点目标 w/h=0) 也建组合器: 单弹簧兜底
                     // 没有 CD 的 minScale 软地板 (MainPage.xaml.cs:410-
                     // 417, 点目标地板 0.1 + W/H Math.Max(0,...)), 速度
@@ -1018,12 +1020,13 @@ public final class MotionReturnHome {
                             float targetW = rectF.width();
                             float targetH = rectF.height();
                             if (!isIcon && !capsule) {
-                                targetW = 0.01f * screen.x;
-                                targetH = 0.01f * screen.y;
+                                targetW = 0.005f * screen.x;
+                                targetH = 0.005f * screen.y;
                             }
                             currentComposer = new ScaleComposer(targetW,
                                     targetH, screen.x, screen.y, s0x, s0y,
-                                    v0, rectF.top, !isIcon);
+                                    v0, rectF.top, capsule ? 0.05f
+                                            : (isIcon ? 0f : 0.1f));
                             composerBuilt = true;
                             Port.log("MotionScaleCompose " + currentComposer.describe()
                                     + " s0x=" + s0x + " s0y=" + s0y

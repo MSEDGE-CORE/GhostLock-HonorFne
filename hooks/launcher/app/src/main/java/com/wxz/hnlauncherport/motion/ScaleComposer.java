@@ -49,8 +49,8 @@ public final class ScaleComposer {
     /** 漂浮风格: 随目标 Y 插值的 scale zeta (构建时定, 逐帧恒定). */
     private final float zetaS;
 
-    /** capsule: 强制点目标语义的 0.1 软地板 (per tuning). */
-    private final boolean softFloor;
+    /** 强制软地板值 (capsule 0.05 / 无图标 0.1; 0 = 关, 走 CD 原生判定). */
+    private final float softFloor;
 
     private final float settleSec;
 
@@ -64,12 +64,12 @@ public final class ScaleComposer {
             float screenW, float screenH, float s0x, float s0y,
             float scaleV0, float targetTopY) {
         this(targetW, targetH, screenW, screenH, s0x, s0y,
-                scaleV0, targetTopY, false);
+                scaleV0, targetTopY, 0f);
     }
 
     public ScaleComposer(float targetW, float targetH,
             float screenW, float screenH, float s0x, float s0y,
-            float scaleV0, float targetTopY, boolean softFloor) {
+            float scaleV0, float targetTopY, float softFloor) {
         this.screenW = screenW;
         this.screenH = screenH;
         float targetAspect = targetW / Math.max(targetH, 1.0f);
@@ -124,14 +124,16 @@ public final class ScaleComposer {
         float cdS = underDamped(t, sFrom, sTo, zetaS, v0S);
         // CD min-scale soft floor (MainPage.xaml.cs:410-417): 点目标
         // (sTo*screenW <= 4, 无图标) 地板 0.1 (窗口渐近缩到 10%,
-        // 不是 0); 有尺寸目标时 min(FromScale, ToScale). capsule 按
-        // tuning 强制 0.1 软地板 (softFloor). Scale 弹簧
+        // 不是 0); 有尺寸目标时 min(FromScale, ToScale). 强制软地板
+        // (softFloor > 0): capsule 0.05 / 无图标 0.1 (per tuning).
+        // Scale 弹簧
         // 下冲 (大 RvScale, 欠阻尼) 低于地板时用有理渐近衰减
         // s' = minScale - a*(1 - 1/(|s-minScale|/a + 1)), a = minScale
         // - 在地板处连续, 渐近下界 minScale - a, 永不负 (负 scale
         // 会镜像窗口).
-        float minScale = (softFloor || sTo * screenW <= 4f)
-                ? 0.1f : Math.min(sFrom, sTo);
+        float minScale = softFloor > 0f
+                ? softFloor
+                : ((sTo * screenW <= 4f) ? 0.1f : Math.min(sFrom, sTo));
         if (cdS < minScale) {
             double a = minScale;
             cdS = (float) (minScale - a * (1.0
