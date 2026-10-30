@@ -127,6 +127,36 @@ public final class ParallelClick {
                             forceAlphaEndpoints(ala);
                         }
                     });
+            // 图标 GONE 边缘点 0.08: 淡化窗 (0.03-0.06) 结束后图标尽快隐藏,
+            // 不再等 stock 的 0.2/0.3 (applyToIconView :543 GONE 判定).
+            XposedHelpers.findAndHookMethod(ala, "getIconAnimationAlphaEdgePoint", new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            if (!Port.on(Port.KEY_PARALLEL)) {
+                                return;
+                            }
+                            try {
+                                java.lang.reflect.Field f = ala.getDeclaredField("mIconAnimationAlphaEdgePoint");
+                                f.setAccessible(true);
+                                f.setFloat(param.thisObject, 0.08f);
+                            } catch (Throwable t) {
+                                Port.log("SeqSwitch icon-gone force failed", t);
+                            }
+                        }
+                    });
+            // shouldContinueAppLaunch 阈值 0.1 -> 0.01 (GAC :44, 仅静态初始化
+            // 一处写点, 无云端覆盖): 启动动画期间上滑不再"接管继续播", 尽早
+            // 走 break 路径, 与 canBreak 端点 0.06 的"尽早可打断"语义对齐.
+            if (Port.on(Port.KEY_PARALLEL)) {
+                try {
+                    java.lang.reflect.Field f = gac.getDeclaredField("SHOULD_CONTINUE_APP_LAUNCH_ANIM");
+                    f.setAccessible(true);
+                    f.setFloat(null, 0.0f);
+                    Port.log("SeqSwitch should-continue threshold forced 0.01");
+                } catch (Throwable t) {
+                    Port.log("SeqSwitch should-continue force failed", t);
+                }
+            }
             Port.log("ParallelClick installed (seq-switch + canBreak)");
         } catch (Throwable t) {
             Port.log("ParallelClick install failed", t);
