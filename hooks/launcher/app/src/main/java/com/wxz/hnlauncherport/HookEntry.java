@@ -41,6 +41,11 @@ public class HookEntry implements IXposedHookLoadPackage {
             } catch (Throwable t) {
                 Port.log("StatusBarContinuity install failed", t);
             }
+            try {
+                com.wxz.hnlauncherport.systemui.CapsuleReconcile.install(lpparam.classLoader);
+            } catch (Throwable t) {
+                Port.log("CapsuleReconcile install failed", t);
+            }
             return;
         }
         if (!LAUNCHER_PKG.equals(lpparam.packageName)) {
@@ -117,11 +122,11 @@ public class HookEntry implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             Port.log("IconNoLabel install failed", t);
         }
-        try {
-            com.wxz.hnlauncherport.warm.StartupWarmup.install(lpparam.classLoader);
-        } catch (Throwable t) {
-            Port.log("StartupWarmup install failed", t);
-        }
+        //try {
+        //    com.wxz.hnlauncherport.warm.StartupWarmup.install(lpparam.classLoader);
+        //} catch (Throwable t) {
+        //    Port.log("StartupWarmup install failed", t);
+        //}
         try {
             com.wxz.hnlauncherport.press.ForceIconPressScale.install(lpparam.classLoader);
         } catch (Throwable t) {

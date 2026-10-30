@@ -155,9 +155,13 @@ public final class WindowFollowScale {
     /** RT grab offset decay time constant; 3*tau ~= 120ms full convergence. */
     private static final long GRAB_TAU_MS = 40L;
     /** Velocity sample window (ms) for the release velocity tracker. */
-    private static final long VEL_WINDOW_MS = 100L;
+    private static final long VEL_WINDOW_MS_PATH = 10L;
+    /** 非 path (5ec5a17 原值): 100ms 平滑窗, 速度毛刺小一个量级. */
+    private static final long VEL_WINDOW_MS_STOCK = 100L;
     /** Release velocity considered valid this long after the last sample. */
-    private static final long VEL_FRESH_MS = 400L;
+    private static final long VEL_FRESH_MS_PATH = 40L;
+    /** 非 path (5ec5a17 原值): 400ms 内 curveVelFresh() 不易过期. */
+    private static final long VEL_FRESH_MS_STOCK = 400L;
     /** Our curve rect considered injectable this long after the last update. */
     private static final long DES_FRESH_MS = 800L;
 
@@ -772,7 +776,8 @@ public final class WindowFollowScale {
                     sLastDesTime = now;
                     // Release velocity tracker (v7 #3): rolling VEL_WINDOW_MS
                     // samples of the card's visual center + scale.
-                    if (now - sVelT0 >= VEL_WINDOW_MS) {
+                    if (now - sVelT0 >= (Port.on(Port.KEY_MOTION_PATH)
+                            ? VEL_WINDOW_MS_PATH : VEL_WINDOW_MS_STOCK)) {
                         if (sVelT0 > 0L) {
                             float dt = (float) (now - sVelT0);
                             sVelX = (desV.centerX() - sVelX0) * 1000f / dt;
@@ -860,11 +865,14 @@ public final class WindowFollowScale {
         // - our card's visual velocity in px/s. Landscape (v7.5): the icon
         // (z) consumers are the PANEL frame, the no-icon consumer is the
         // visual frame - remap per consumer via the live trajectory rot.
+        // 非 path: 不替换 -> 宿主原生 getTransSpeed 钳制 (z=false 的 X
+        // 2000/|vy| 衰减 + Y sign-cap ±2000) 保持生效 (per tuning).
         XposedHelpers.findAndHookMethod(hsv2, "getTransSpeed",
                 boolean.class, boolean.class, new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        if (!Port.on(Port.KEY_WIN_SCALE) || !velocityFresh()) {
+                        if (!Port.on(Port.KEY_WIN_SCALE) || !velocityFresh()
+                                || !Port.on(Port.KEY_MOTION_PATH)) {
                             return;
                         }
                         boolean icon = (Boolean) param.args[0];
@@ -877,11 +885,13 @@ public final class WindowFollowScale {
 
         // (C) keep the raw fields in sync (RoundImageView.setAnimationAttrs
         // reads mTransSpeedX/Y directly - PANEL space, v7.5 landscape).
+        // 非 path: 同 (B), 不覆写 -> 原生钳制值保留.
         XposedHelpers.findAndHookMethod(hsv2, "setTransSpeedX", float.class,
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        if (!Port.on(Port.KEY_WIN_SCALE) || !velocityFresh()) {
+                        if (!Port.on(Port.KEY_WIN_SCALE) || !velocityFresh()
+                                || !Port.on(Port.KEY_MOTION_PATH)) {
                             return;
                         }
                         XposedHelpers.setFloatField(param.thisObject, "mTransSpeedX", trajPanelVelX());
@@ -891,7 +901,8 @@ public final class WindowFollowScale {
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        if (!Port.on(Port.KEY_WIN_SCALE) || !velocityFresh()) {
+                        if (!Port.on(Port.KEY_WIN_SCALE) || !velocityFresh()
+                                || !Port.on(Port.KEY_MOTION_PATH)) {
                             return;
                         }
                         XposedHelpers.setFloatField(param.thisObject, "mTransSpeedY", trajPanelVelY());
@@ -922,7 +933,8 @@ public final class WindowFollowScale {
     /** True when our release velocity may replace the stock speeds. */
     private static boolean velocityFresh() {
         long now = SystemClock.uptimeMillis();
-        return sVelT > 0L && (sFingerDown || now - sVelT < VEL_FRESH_MS);
+        return sVelT > 0L && (sFingerDown || now - sVelT < (Port.on(Port.KEY_MOTION_PATH)
+                ? VEL_FRESH_MS_PATH : VEL_FRESH_MS_STOCK));
     }
 
     /**

@@ -398,6 +398,51 @@ public final class ForceBlur {
                 Port.log("ForceBlur return-home restore hook failed", t);
             }
 
+            // Swipe-up gesture-start blur. The app swipe-up path has NO blur
+            // engage during the drag: the only return-home engage is the
+            // release-time createWindowAnimationToHome (snapping), while
+            // in-app kills (HnActivityNotifierEx:179, AbsSwipeUpHandler
+            // :2568/:2793/:2849) have already zeroed the fraction. The first
+            // drag frames therefore reveal an UNBLURRED desktop whenever the
+            // swipe-up happens after a kill (the "sometimes" case; swiping
+            // before the kill still had fraction=1 and looked instant).
+            // AbsSwipeUpHandler is the base of the app-swipe-up handler and
+            // onGestureStarted fires at drag start, before the desktop is
+            // revealed -> engage full blur there so the reveal is blurred
+            // from frame one. resetBlurFraction(1.0f, true) is the proven
+            // stock icon-path pattern; mid-fade re-engage is safe
+            // (doBlurAnimator re-anchors the radius).
+            try {
+                Class<?> absHandler = XposedHelpers.findClass(
+                        "com.android.quickstep.AbsSwipeUpHandler", cl);
+                Class<?> lmGesture = XposedHelpers.findClass(LEVEL_MGR, cl);
+                XposedHelpers.findAndHookMethod(absHandler, "onGestureStarted",
+                        boolean.class, new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                                if (!Port.on(Port.KEY_BLUR)) {
+                                    return;
+                                }
+                                try {
+                                    Object mgr = XposedHelpers.callStaticMethod(
+                                            lmGesture, "instance");
+                                    float last = XposedHelpers.getFloatField(
+                                            mgr, "mLastBlurFraction");
+                                    if (last < 1.0f) {
+                                        XposedHelpers.callMethod(mgr,
+                                                "resetBlurFraction", 1.0f, Boolean.TRUE);
+                                        Port.log("ForceBlur gesture-start blur");
+                                    }
+                                } catch (Throwable t) {
+                                    Port.log("ForceBlur gesture-start blur failed", t);
+                                }
+                            }
+                        });
+                Port.log("ForceBlur gesture-start hooked");
+            } catch (Throwable t) {
+                Port.log("ForceBlur gesture-start hook failed", t);
+            }
+
             // 搜索页(全局搜索)高级模糊强制启用. V14 进入搜索页的窗口模糊
             // 机型区分链 (见分析):
             //   GlobalSearchUtils.isEnableWindowBlur()

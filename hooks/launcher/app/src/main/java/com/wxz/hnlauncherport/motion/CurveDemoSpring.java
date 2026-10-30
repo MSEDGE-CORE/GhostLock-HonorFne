@@ -134,7 +134,7 @@ public final class CurveDemoSpring {
      */
     public static float scaleV0(float vyPxPerSec, float screenSpan, float scaleCur) {
         float s = Math.max(scaleCur, 0.05f);
-        return (float) (Math.abs(vyPxPerSec) * (1.0 - FAR_POINT) * 5.0
+        return (float) (Math.abs(vyPxPerSec) * (1.0 - FAR_POINT) * 8.0
                 / (screenSpan * s) / 30.0 * FLY_FAR
                 / Math.sqrt(TRANSITION_DURATION)) * inertia();
     }
@@ -150,8 +150,8 @@ public final class CurveDemoSpring {
         double t = Math.sqrt(TRANSITION_DURATION);
         double v = vPxPerSec;
         return (float) (isX
-                ? v * 2.0 * FLY_FAR / (20.0 * t)
-                : v * 5.0 * (0.5 - FAR_POINT) / (1.0 - FAR_POINT) / 30.0 * FLY_FAR / t * 1.3) * inertia();
+                ? v * 3.0 * FLY_FAR / (20.0 * t)
+                : v * 6.0 * (0.5 - FAR_POINT) / (1.0 - FAR_POINT) / 30.0 * FLY_FAR / t * 1.3) * inertia();
     }
 
     /**
@@ -169,7 +169,7 @@ public final class CurveDemoSpring {
         if (t <= 0f) {
             return 1f;
         }
-        double dur = Math.max(0.05, 0.6 * coeff);
+        double dur = Math.max(0.05, 0.8 * coeff);
         double w = 4.0 * Math.PI / dur;
         double v = (1.0 + w * t) * Math.exp(-w * t);
         return (float) Math.max(0.0, Math.min(1.0, v));

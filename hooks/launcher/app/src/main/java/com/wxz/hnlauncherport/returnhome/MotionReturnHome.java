@@ -826,7 +826,7 @@ public final class MotionReturnHome {
                     // 注意: transHook 签名 (from, to, isReturnHome),
                     // args[1] 是 RectF 不是 Boolean (图标语义 = isReturnHome).
                     v0 = CurveDemoSpring.transV0(speed, isX) * 1f
-                            * (rot == 0 ? 1f : 0.4f);
+                            * (rot == 0 ? 1f : 0.4f) * ((isX || isReturnHome || capsule) ? 1f : 1.3f);
                     // CD 实际弹簧 settle (GetSpringAnimationVisibleTick
                     // 0.1% 阈值): 回桌时长按 X/Y 弹簧真实 settle 取 max,
                     // 与组合器 settle 一起决定动画时长 (不再定长).
@@ -915,7 +915,7 @@ public final class MotionReturnHome {
                     // 胶囊也走 CurveDemo 曲线 (slot-0 轻快, T = 0.85s),
                     // 仅目标值 (endPos, widenForCapsule) 与阈值不同.
                     stiffness = CurveDemoSpring.stiffness();
-                    damping = CurveDemoSpring.damping(CurveDemoSpring.zetaXY());
+                    damping = (isReturnHome) ? CurveDemoSpring.damping(CurveDemoSpring.zetaXY()) : CurveDemoSpring.damping(1.01f);
                     threshold = 0.3f;
                 } else if (capsule) {
                     stiffness = MotionParams.CAPSULE_MOVEMENT_STIFFNESS;
@@ -997,7 +997,7 @@ public final class MotionReturnHome {
                     // ScaleY), 即 s0; 退化兜底用目标 ratio.
                     float scaleCur = s0Valid ? s0y : ratio;
                     // capsule cdScale 初速度 x3 (per tuning).
-                    v0 = (CurveDemoSpring.scaleV0(vy, span, scaleCur) * -1f);
+                    v0 = (CurveDemoSpring.scaleV0(vy, span, scaleCur) * -1f) * (isIcon || capsule ? 1f : 1.2f);
                     // 无图标 (退化点目标 w/h=0) 也建组合器: 单弹簧兜底
                     // 没有 CD 的 minScale 软地板 (MainPage.xaml.cs:410-
                     // 417, 点目标地板 0.1 + W/H Math.Max(0,...)), 速度
@@ -1020,8 +1020,8 @@ public final class MotionReturnHome {
                             float targetW = rectF.width();
                             float targetH = rectF.height();
                             if (!isIcon && !capsule) {
-                                targetW = 0.005f * screen.x;
-                                targetH = 0.005f * screen.y;
+                                targetW = 0.001f * screen.x;
+                                targetH = 0.001f * screen.y;
                             }
                             currentComposer = new ScaleComposer(targetW,
                                     targetH, screen.x, screen.y, s0x, s0y,
