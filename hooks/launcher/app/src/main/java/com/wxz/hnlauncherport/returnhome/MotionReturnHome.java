@@ -790,17 +790,12 @@ public final class MotionReturnHome {
                 //   RvX = vx * FlyFar/(20*sqrt(T))               = vx*0.25
                 //   RvY = vy*(0.5-F)/(1-F)/30*FlyFar/sqrt(T)     = vy*0.0625
                 // 胶囊与普通窗口同一条曲线, 仅目标值 (endPos) 不同.
-                boolean path = Port.on(Port.KEY_MOTION_PATH);
-                // WindowFollowScale (窗口跟手缩放) curve live: the from-rect
-                // is OUR curve rect and getTransSpeed is hooked to return the
-                // card's VISUAL center velocity (z-aware per consumer frame,
-                // (B) v7.5). The spring v0 IS that velocity directly - no
-                // finger->visual conversion, no endPos-based math; the icon
-                // consumer takes the visual->panel remap below (v0.9).
-                // Capsule follows the SAME normal-icon velocity route
-                // (curve live -> synthesized -> v0.4 classic); capsule flows
-                // never render the curve, so curveVelFresh stays false
-                // there and the chain falls through to the classic clamp.
+                // 横屏-无图标不走 path: s0x/s0y 仅在 rot==0 的 calc 钩子里
+                // 捕获, 横屏无图标建不了组合器 (无 CD 软地板, v0 可俯冲
+                // 负值 -> 闪大/镜像), 回退 v7.5 横屏链 (curveLive/wfsSyn/
+                // classic, 均带钳制). 图标/胶囊 (有尺寸目标) 横屏保持 path.
+                boolean path = Port.on(Port.KEY_MOTION_PATH)
+                        && (liveRot(h) == 0 || isReturnHome || capsule);
                 boolean curveLive = !path && WindowFollowScale.curveVelFresh();
                 boolean wfsSyn = false;
                 float v0;
@@ -963,13 +958,10 @@ public final class MotionReturnHome {
 
                 float ratio = rectF.height() / span;
                 float endPos = Math.abs(1f - ratio);
-                boolean path = Port.on(Port.KEY_MOTION_PATH);
-                // WindowFollowScale curve live: the scale spring value is
-                // (1 - sigma) and the hook tracks the TRUE sigma rate
-                // (sVelSig, sigma/s, measured off its own trajectory
-                // algorithm) - use it directly instead of the endPos-based
-                // stock chain rule below. Safety clamp only (native
-                // max-speed semantics: endPos * 37).
+                // 横屏-无图标不走 path (同 transHook): 无 s0 建不了组合器,
+                // 回退带钳制的 v7.5 横屏链; 图标/胶囊保持 path.
+                boolean path = Port.on(Port.KEY_MOTION_PATH)
+                        && (liveRot(h) == 0 || isIcon || capsule);
                 boolean curveLive = !capsule && !path && WindowFollowScale.curveVelFresh();
                 boolean wfsSyn = false;
                 boolean composed = false;
