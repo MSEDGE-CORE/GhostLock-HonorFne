@@ -26,7 +26,7 @@ public final class Port {
     public static final String KEY_MP_INERTIA = "hn_port_mp_inertia";       // float 惯性系数 0-10, 默认 1 (v0 乘子)
     public static final String KEY_MP_ZETA_XY = "hn_port_mp_zeta_xy";       // float 平移弹簧 zeta 0.5-1.5, 默认 0.86
     public static final String KEY_MP_ZETA_SCALE = "hn_port_mp_zeta_scale"; // float 缩放弹簧 zeta 0.5-1.5, 默认 0.86
-    public static final String KEY_MP_ZETA_WH = "hn_port_mp_zeta_wh";       // float 宽高弹簧 zeta 0.5-1.5, 默认 0.82
+    public static final String KEY_MP_ZETA_WH = "hn_port_mp_zeta_wh";       // float 宽高弹簧 zeta 0.5-1.5, 默认 0.86
     public static final String KEY_PARALLEL = "hn_port_parallel";   // 1 = 连续切换应用: click new icon kills prev app anim immediately + canBreak bypass
     public static final String KEY_CAPSULE_RECONCILE = "hn_port_capsule_reconcile"; // 1 = 灵动胶囊状态刷新: reShow guard + 1000ms 对账
     public static final String KEY_BLUR = "hn_port_blur";           // 1 = force transition blur on all models

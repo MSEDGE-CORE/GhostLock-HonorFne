@@ -15,7 +15,7 @@ import com.wxz.hnlauncherport.Port;
  *
  * Per-axis zeta (slot-0; rotation excluded from the port):
  *   X / Y / Scale   0.86
- *   Width / Height  0.82
+ *   Width / Height  0.86
  *   Corner          1.0 (CurveDemo CornerRadiusDamping default)
  *   Opacity         1.0 (begin 0.1T / duration 0.3T, not spring-ported)
  * Launch v0 = 0; gesture-handoff v0 is supplied by the caller.
@@ -26,7 +26,7 @@ public final class CurveDemoSpring {
 
     public static final float ZETA_XY = 0.86f;
     public static final float ZETA_SCALE = 0.86f;
-    public static final float ZETA_WH = 0.82f;
+    public static final float ZETA_WH = 0.86f;
     public static final float ZETA_CORNER = 1.0f;
 
     // ---- 曲线风格 (MotionPathDialog radio, Settings.Global) ----

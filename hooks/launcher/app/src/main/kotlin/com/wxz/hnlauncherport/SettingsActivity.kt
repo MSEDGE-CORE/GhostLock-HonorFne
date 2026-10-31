@@ -688,7 +688,7 @@ private fun MotionPathDialog(onDismiss: () -> Unit) {
     var zetaWH by remember {
         mutableFloatStateOf(
             Settings.Global.getFloat(
-                context.contentResolver, Port.KEY_MP_ZETA_WH, 0.82f).coerceIn(0.5f, 1.5f))
+                context.contentResolver, Port.KEY_MP_ZETA_WH, 0.86f).coerceIn(0.5f, 1.5f))
     }
 
     fun putF(key: String, v: Float): Boolean {
@@ -706,7 +706,7 @@ private fun MotionPathDialog(onDismiss: () -> Unit) {
                     inertia = 1f
                     zetaXY = 0.86f
                     zetaScale = 0.86f
-                    zetaWH = 0.82f
+                    zetaWH = 0.86f
                 }) {
                     Icon(Icons.Filled.RestartAlt, contentDescription = "恢复默认")
                 }
