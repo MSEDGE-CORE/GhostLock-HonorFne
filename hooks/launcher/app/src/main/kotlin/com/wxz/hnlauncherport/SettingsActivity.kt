@@ -459,6 +459,10 @@ private fun SettingsScreen() {
                             "禁用手势提示条跟随", "禁用底部手势提示条跟手移动",
                             Port.KEY_NAV_HANDLE_NO_FOLLOW
                         ), true)
+                        SettingsSwitchItem(ToggleRow(
+                            "旋转建议", "旋转锁定时显示建议悬浮球",
+                            Port.KEY_ROTATION_SUGGEST
+                        ), true)
                     }
                     SettingsSection("杂项") {
                         SettingsSwitchItem(ToggleRow(

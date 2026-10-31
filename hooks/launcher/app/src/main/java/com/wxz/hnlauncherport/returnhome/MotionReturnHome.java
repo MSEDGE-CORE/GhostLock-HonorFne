@@ -130,6 +130,33 @@ public final class MotionReturnHome {
     private static ScaleComposer currentComposer;
     private static boolean composerBuilt;
 
+    /**
+     * path 模式 trans 弹簧 (cdX/cdY) 真实时钟接管: 逐实例 (endPos, v0, zeta).
+     * getInterpolation 按 TRANS_COMPOSED 身份接管 - un-warp piecewise 时间
+     * -> 线性 fraction x animator duration = 真实秒 -> 解析弹簧求值, 输出
+     * endPos 归一化 (宿主消费端 lambda$3 :1414/:1430 乘 delta). v0 不再被
+     * ownSettle/duration 稀释, 各弹簧按各自 settle 先后收尾 (CD 统一时钟).
+     */
+    private static final WeakHashMap<Object, TransSpec> TRANS_COMPOSED = new WeakHashMap<>();
+
+    /** path trans 弹簧真实时钟参数. */
+    private static final class TransSpec {
+        final float endPos;
+        final float v0;
+        final float zeta;
+
+        TransSpec(float endPos, float v0, float zeta) {
+            this.endPos = endPos;
+            this.v0 = v0;
+            this.zeta = zeta;
+        }
+
+        /** 真实秒 t 求值, 输出 endPos 归一化 (settle 时 -> 1). */
+        float eval(float t) {
+            return CurveDemoSpring.springValue(t, 0f, endPos, zeta, v0) / endPos;
+        }
+    }
+
     /** path 模式本手势 trans 弹簧的 CD 可见 settle 时长 (ms, X/Y 取 max). */
     private static volatile long pathTransSettleMs = 0L;
     /**
@@ -208,6 +235,7 @@ public final class MotionReturnHome {
                             currentComposer = null;
                             composerBuilt = false;
                             pathTransSettleMs = 0L;
+                            TRANS_COMPOSED.clear();
                             RectF fromRaw = (RectF) param.args[1];
                             RectF fromP = fromRaw;
                             if (rot != 0 && fromRaw != null && !fromRaw.isEmpty()) {
@@ -372,6 +400,23 @@ public final class MotionReturnHome {
                 param.setResult(1200L);
             }
         });
+        // 运动路径优化: getScaleDuration / getStartOffset (背景层
+        // workspace/hotseat 时长与延迟, 派生自 mReturnHomeAnimDuration)
+        // 按比例重映射到 800ms x 时长系数 - 背景 layer 不再被 MotionDur
+        // 的 max-settle 窗口时长拉长. 比例式 (bg/base) 自动保留宿主自身的
+        // 横屏 x0.8 (getScaleDuration) 与 0.24/0.16 startOffset 分支.
+        XposedBridge.hookAllMethods(hsv2, "getScaleDuration", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                remapBgDuration(param, "getScaleDuration");
+            }
+        });
+        XposedBridge.hookAllMethods(hsv2, "getStartOffset", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                remapBgDuration(param, "getStartOffset");
+            }
+        });
         // 运动路径优化: 逐实例接管组合 scale 弹簧的 getInterpolation.
         // getInterpolation 可能声明在 SpringInterpolator 或其父类
         // PhysicalInterpolatorBase - 两处都尝试, hookAllMethods 按名匹配.
@@ -404,7 +449,7 @@ public final class MotionReturnHome {
         }
         installFadeHooks(cl);
         installDiag(cl);
-        Port.log("MotionReturnHome v0.9 installed");
+        Port.log("MotionReturnHome v0.10 installed");
     }
 
     /**
@@ -634,8 +679,25 @@ public final class MotionReturnHome {
             XposedBridge.hookAllMethods(cls, "getInterpolation", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    if (!motionEnabled() || !Port.on(Port.KEY_MOTION_PATH)) {
+                        return;
+                    }
+                    // path trans 弹簧 (cdX/cdY): 真实时钟接管 - t = 线性
+                    // fraction x animator duration (真实秒), v0 不再被
+                    // ownSettle/duration 稀释. duration 未就绪 (<=0) 或退化
+                    // endPos 时保留宿主原生求值兜底.
+                    TransSpec ts = TRANS_COMPOSED.get(param.thisObject);
+                    if (ts != null) {
+                        long dur = lastHomeDurMs;
+                        if (dur > 0L && Math.abs(ts.endPos) >= 1.0e-4f) {
+                            float x = ScaleComposer.inversePiecewise((Float) param.args[0]);
+                            float t = x * (float) dur / 1000f;
+                            param.setResult(ts.eval(t));
+                        }
+                        return;
+                    }
                     ScaleComposer c = COMPOSED.get(param.thisObject);
-                    if (c == null || !motionEnabled() || !Port.on(Port.KEY_MOTION_PATH)) {
+                    if (c == null) {
                         return;
                     }
                     try {
@@ -648,7 +710,13 @@ public final class MotionReturnHome {
                             param.setResult(1f);
                             return;
                         }
-                        param.setResult(c.eval(x));
+                        // 真实时钟 (cdW/cdH/cdScale): t = 线性 fraction x
+                        // animator duration (真实秒), 三弹簧按各自 settle
+                        // 先后收尾、尾段静止 (CD 统一时钟); duration 未就绪
+                        // 退回组合器自身 settle (归一化时钟兜底).
+                        float durSec = lastHomeDurMs > 0L
+                                ? (float) lastHomeDurMs / 1000f : 0f;
+                        param.setResult(c.eval(x, durSec));
                     } catch (Throwable t) {
                         Port.log("MotionScaleCompose interp failed", t);
                     }
@@ -661,6 +729,61 @@ public final class MotionReturnHome {
 
     private static boolean motionEnabled() {
         return Port.on(Port.KEY_MOTION);
+    }
+
+    /**
+     * 背景层时长重映射 (path 开): getScaleDuration / getStartOffset 的
+     * stock 结果都派生自 mReturnHomeAnimDuration (含宿主自身的横屏 x0.8 /
+     * 0.24-0.16 offset 分支), 按比例 (bgDur / homeDur) 缩放到 800ms x
+     * 时长系数 - 前景窗口层保持 MotionDur 的 max-settle 时长不变, 背景
+     * 层回到固定基线. path 关 / 非回桌手势 (homeDur 未设) 保持原值.
+     */
+    private static void remapBgDuration(XC_MethodHook.MethodHookParam param,
+            String tag) {
+        if (!motionEnabled() || !Port.on(Port.KEY_MOTION_PATH)) {
+            return;
+        }
+        try {
+            // 本地 XposedHelpers stub 无 getLongField - 原生反射 (同
+            // setStaticField 先例), 沿继承链向上找声明类.
+            long homeDur;
+            try {
+                java.lang.reflect.Field fld = null;
+                for (Class<?> c = param.thisObject.getClass();
+                        c != null && fld == null; c = c.getSuperclass()) {
+                    try {
+                        fld = c.getDeclaredField("mReturnHomeAnimDuration");
+                    } catch (NoSuchFieldException e) {
+                        fld = null;
+                    }
+                }
+                if (fld == null) {
+                    return;
+                }
+                fld.setAccessible(true);
+                homeDur = fld.getLong(param.thisObject);
+            } catch (IllegalAccessException e) {
+                return;
+            }
+            Object res = param.getResult();
+            if (homeDur <= 0L || !(res instanceof Number)) {
+                return;
+            }
+            long stock = ((Number) res).longValue();
+            long bg = CurveDemoSpring.bgAnimDurationMs();
+            // getStartOffset (path 开): stock 的 24% (lite 16%) 错峰起始改
+            // 1% x bg 时长 (~8ms) - 背景层与前景窗口几乎同帧起步.
+            long mapped = "getStartOffset".equals(tag)
+                    ? Math.round(bg * 0.01d)
+                    : Math.round(stock * (double) bg / (double) homeDur);
+            if (mapped > 0L) {
+                param.setResult(mapped);
+                Port.log("MotionBg " + tag + " " + stock + " -> " + mapped
+                        + " (home=" + homeDur + " bg=" + bg + ")");
+            }
+        } catch (Throwable t) {
+            Port.log("MotionBg " + tag + " failed", t);
+        }
     }
 
     /**
@@ -858,13 +981,7 @@ public final class MotionReturnHome {
                     v0 = CurveDemoSpring.transV0(speed, isX) * 1f
                             * (rot == 0 ? 1f : 0.4f) * ((isX || isReturnHome || capsule) ? 1f : 1.3f);
                     // CD 实际弹簧 settle (GetSpringAnimationVisibleTick
-                    // 0.1% 阈值): 回桌时长按 X/Y 弹簧真实 settle 取 max,
-                    // 与组合器 settle 一起决定动画时长 (不再定长).
-                    long settleMs = (long) (CurveDemoSpring.springSettle(
-                            0f, endPos, CurveDemoSpring.zetaXY(), v0) * 1000f);
-                    if (settleMs > pathTransSettleMs) {
-                        pathTransSettleMs = settleMs;
-                    }
+                    // 0.1% 阈值) 移至 1px X 修复之后按最终 endPos 计算.
                 } else if (curveLive) {
                     // v7.5 landscape: curveVelX/Y are the card's VISUAL
                     // velocity. The icon (z) consumer is the PANEL
@@ -948,6 +1065,19 @@ public final class MotionReturnHome {
                     sNoIconXDelta = endPos;
                 }
 
+                // CD 实际弹簧 settle (GetSpringAnimationVisibleTick 0.1%
+                // 阈值): 按最终 endPos (1px X 修复后) + 实际 zeta (无图标/
+                // 胶囊 1.01) 计算, 回桌时长按 X/Y 真实 settle 取 max, 与
+                // 组合器 settle 一起决定动画时长 (不再定长).
+                if (Port.on(Port.KEY_MOTION_PATH)) {
+                    float zeta = isReturnHome ? CurveDemoSpring.zetaXY() : 1.01f;
+                    long settleMs = (long) (CurveDemoSpring.springSettle(
+                            0f, endPos, zeta, v0) * 1000f);
+                    if (settleMs > pathTransSettleMs) {
+                        pathTransSettleMs = settleMs;
+                    }
+                }
+
                 float stiffness;
                 float damping;
                 float threshold;
@@ -976,6 +1106,12 @@ public final class MotionReturnHome {
                 Object spring = SpringFactory.make(cl, stiffness, damping,
                         endPos, v0, threshold);
                 if (spring != null) {
+                    // path trans 弹簧注册真实时钟接管 (installComposedInterpHook
+                    // TRANS 分支); damping 分支 zeta: isReturnHome 0.86 / 1.01.
+                    if (Port.on(Port.KEY_MOTION_PATH)) {
+                        TRANS_COMPOSED.put(spring, new TransSpec(endPos, v0,
+                                isReturnHome ? CurveDemoSpring.zetaXY() : 1.01f));
+                    }
                     param.setResult(spring);
                 }
                 } catch (Throwable t) {

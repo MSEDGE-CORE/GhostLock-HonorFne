@@ -3,6 +3,7 @@ package com.wxz.hnlauncherport.systemui;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.os.Bundle;
+import android.os.IBinder;
 import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.View;
@@ -62,6 +63,38 @@ import de.robv.android.xposed.XposedHelpers;
  * (A7) 贴边最小化过渡 (minimizeTask -> FreeformAnimationRunner):
  * getChangeAnimInterPolater 返回的 stock spring(206/27/v0=0) 换
  * spring(800/50.35/v0=贴边松手速度), 时长取 spring 自然时长.
+ * (A9) 横屏任务进小窗的快照飞行时长: runner 的 z3 分支
+ * (!isWideStatus && isTaskLandScape) 会以 j=500ms 调
+ * BoundsChangeAnimationFactory.createBoundsChangeAnimations (该时长
+ * 烤进返回的 Animation, z2&&z3 时插值器/时长均不被覆盖); hook 工厂把
+ * 500ms 参数改为 1ms, 飞行近瞬时 (配合 A8 的旋转 jump-cut); 该工厂的
+ * 500 入参仅来自 z3 分支, 200ms 竖屏分支与其他调用不受影响.
+     * (A11) spring 路径时长减半: runner 以 spring 自然时长 (206/27 或 A7 的
+     * 800/50.35) 调 FreeformAnimationAdapter.setDuration (:366/:387, 全工程
+     * 仅此两处调用), 时长同时烤进 AnimationSet 子动画与 getDurationHint
+     * (computeDurationHint) -> jMax -> ValueAnimator.setDuration(jMax) 实际
+     * 播放; 入参减半 = 同一 spring 曲线 2 倍速播放; z2&&z3 横屏分支本就跳过
+     * setDuration, 不受影响.
+     * (A10) 横屏 OneStep 进小窗直接跳过飞行动画: mini transform 的 flight
+ * transition (type==CHANGE, 无 displayChange, 含 flag 33554432 且
+ * windowingMode==5 的 bounds 变化 task) 到达 FTT 时, 若 display 已横屏
+ * (rotation!=0), 直接 apply 起始事务并立即 finish —— 跳过快照飞行,
+ * 落终态 landscape bounds, WM 随即发起回竖屏旋转 transition, 由 A8
+ * 继续 jump-cut; 跳过 FTT:125 的 setIsFreeformAnimRunning(true), 故
+ * 手动补记 A8 所需的飞行标记; 竖屏 (rotation==0) 不命中, 保持 stock
+ * 飞行; miniform/freeform 状态由 FreeformTaskTransitionObserver.
+ * onTransitionFinished -> HnFreeformController.onTransitionFinished
+ * 统一复位, 不会卡死.
+ * (A8) 横屏 swipe-up mini 落位后系统回竖屏旋转 (mini 化让出 display
+ * 方向话语权, Transition.finishTransition 内联发起 displayChange 的
+ * CHANGE transition, stock 由 DefaultTransitionHandler 播 333ms
+ * HnRotationAnimation): FreeformTaskTransitionHandler.startAnimation
+ * 接管 — type==CHANGE 且带 displayChange, 且含 windowingMode==5 的
+ * bounds 变化 task, 且该 task 近期 (FF_RECENT_MS 内) 有
+ * setIsFreeformAnimRunning(taskId, true) (即刚经历过 mini 飞行) ->
+ * 跳过旋转动画, 直接 apply 起始事务并立即 finish (与 stock no-anim
+ * 分支同构), 屏幕瞬时切竖屏, mini 窗直落终态 bounds; 物理旋转等
+ * 无近期飞行的场景不受影响, 走 stock 旋转.
  */
 public final class FreeformFx {
 
@@ -75,7 +108,11 @@ public final class FreeformFx {
     private static final String CAPTION_LISTENER_CLS = "com.android.wm.shell.windowdecor.CaptionWindowDecorViewModel$CaptionTouchEventListener";
     private static final String FLING_GD_CLS = "com.android.wm.shell.windowdecor.DragResizeInputListener$TaskResizeInputEventReceiver$FlingGestureDetector";
     private static final String FF_RUNNER_CLS = "com.android.wm.shell.freeform.FreeformAnimationRunner";
+    private static final String FTT_HANDLER_CLS = "com.android.wm.shell.freeform.FreeformTaskTransitionHandler";
     private static final String SPRING_CLS = "com.hihonor.dynamicanimation.interpolator.SpringInterpolator";
+
+    /** (A8) mini 飞行起始标记有效期: 飞行 500ms + WM 建 transition/dispatch 延迟可达 ~2s */
+    private static final long FF_RECENT_MS = 2500L;
 
     private static class Live {
         final Rect bounds;
@@ -113,6 +150,8 @@ public final class FreeformFx {
     private static final ThreadLocal<Boolean> sFastFling = new ThreadLocal<>();
 
     private static final ThreadLocal<Boolean> sCloseGuard = new ThreadLocal<>();
+    /** (A8) task -> setIsFreeformAnimRunning(taskId,true) 时刻 */
+    private static final Map<Integer, Long> sFfAnimStart = new HashMap<>();
     private static ClassLoader sCl;
     private static volatile boolean sPreFieldMissing;
 
@@ -812,6 +851,201 @@ public final class FreeformFx {
                         }
                     }
                 });
+
+        // (A9) 横屏进小窗飞行 500ms -> 1ms (仅 z3 横屏任务的 500 入参)
+        final Class<?> bcfCls = XposedHelpers.findClass(
+                "com.android.wm.shell.freeform.BoundsChangeAnimationFactory", cl);
+        XposedHelpers.findAndHookMethod(bcfCls, "createBoundsChangeAnimations",
+                XposedHelpers.findClass("android.window.TransitionInfo$Change", cl),
+                Rect.class, long.class, float.class, float.class, boolean.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        if (!Port.on(Port.KEY_FF_ANIM)) {
+                            return;
+                        }
+                        if (((Long) param.args[2]).longValue() == 500L) {
+                            param.args[2] = Long.valueOf(0L);
+                            Port.log("FreeformFx: landscape mini flight 500ms -> 1ms");
+                        }
+                    }
+                });
+
+        // (A11) spring 路径时长 *0.5 (同曲线 2 倍速): 唯一调用方是 runner
+        // :366/:387 传入的 spring 自然时长
+        final Class<?> faaCls = XposedHelpers.findClass(
+                "com.android.wm.shell.freeform.FreeformAnimationAdapter", cl);
+        XposedHelpers.findAndHookMethod(faaCls, "setDuration",
+                long.class, boolean.class, boolean.class, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        if (!Port.on(Port.KEY_FF_ANIM)) {
+                            return;
+                        }
+                        long d = (Long) param.args[0];
+                        if (d > 0L) {
+                            param.args[0] = Long.valueOf(d / 2L);
+                            Port.log("FreeformFx: spring path duration " + d + " -> " + d / 2L);
+                        }
+                    }
+                });
+
+        // (A8a) 记录 mini 飞行起始: FTT.startAnimation 对 windowingMode==5 的
+        // task 会调 setIsFreeformAnimRunning(taskId, true)
+        XposedHelpers.findAndHookMethod(XposedHelpers.findClass(FF_CTRL_CLS, cl),
+                "setIsFreeformAnimRunning", int.class, boolean.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        if (!Port.on(Port.KEY_FF_ANIM)) {
+                            return;
+                        }
+                        if (!Boolean.TRUE.equals(param.args[1])) {
+                            return;
+                        }
+                        int taskId = (Integer) param.args[0];
+                        synchronized (sFfAnimStart) {
+                            pruneFfAnimStartLocked();
+                            sFfAnimStart.put(taskId, SystemClock.uptimeMillis());
+                        }
+                    }
+                });
+
+        // (A8b) 接管回竖屏旋转: type==CHANGE 且带 displayChange, 且含
+        // windowingMode==5 的 bounds 变化 task 且近期有 mini 飞行 -> 跳过旋转
+        final Class<?> fttCls = XposedHelpers.findClass(FTT_HANDLER_CLS, cl);
+        XposedHelpers.findAndHookMethod(fttCls, "startAnimation",
+                IBinder.class,
+                XposedHelpers.findClass("android.window.TransitionInfo", cl),
+                XposedHelpers.findClass("android.view.SurfaceControl$Transaction", cl),
+                XposedHelpers.findClass("android.view.SurfaceControl$Transaction", cl),
+                XposedHelpers.findClass(
+                        "com.android.wm.shell.transition.Transitions$TransitionFinishCallback", cl),
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        if (!Port.on(Port.KEY_FF_ANIM)) {
+                            return;
+                        }
+                        try {
+                            maybeJumpCutRotation(param);
+                        } catch (Throwable t) {
+                            Port.log("FreeformFx: rotation takeover failed", t);
+                        }
+                    }
+                });
+    }
+
+    /**
+     * (A8/A10) 判定并接管 mini 化相关 transition:
+     * 共同条件: type==CHANGE 且存在 mode==CHANGE 且 windowingMode==5 且
+     * start/end bounds 不同的 task change.
+     * A8 (带 displayChange): 该 task 在 FF_RECENT_MS 内有 mini 飞行标记 ->
+     * 跳过回竖屏旋转.
+     * A10 (无 displayChange 且 change 带 flag 33554432 且 display 已横屏):
+     * 跳过快照飞行, 落终态 landscape bounds, 并补记 A8 所需的飞行标记
+     * (跳过了 FTT:125 的 setIsFreeformAnimRunning(true)).
+     * 命中后 apply 起始事务 + 主线程立即 onTransitionFinished(null, null)
+     * (与 stock no-anim 分支同构), setResult(true).
+     */
+    private static void maybeJumpCutRotation(XC_MethodHook.MethodHookParam param) {
+        Object info = param.args[1];
+        if (((Integer) XposedHelpers.callMethod(info, "getType")).intValue() != 6) {
+            return;
+        }
+        boolean hasDisplayChange = false;
+        int miniTaskId = -1;
+        boolean miniTransformFlag = false;
+        Iterable<?> changes = (Iterable<?>) XposedHelpers.callMethod(info, "getChanges");
+        for (Object change : changes) {
+            int sr = (Integer) XposedHelpers.callMethod(change, "getStartRotation");
+            int er = (Integer) XposedHelpers.callMethod(change, "getEndRotation");
+            if (sr != er) {
+                hasDisplayChange = true;
+            }
+            Object taskInfo = XposedHelpers.callMethod(change, "getTaskInfo");
+            if (taskInfo == null
+                    || (Integer) XposedHelpers.callMethod(change, "getMode") != 6
+                    || (Integer) XposedHelpers.callMethod(taskInfo, "getWindowingMode") != 5) {
+                continue;
+            }
+            Rect sb = (Rect) XposedHelpers.callMethod(change, "getStartAbsBounds");
+            Rect eb = (Rect) XposedHelpers.callMethod(change, "getEndAbsBounds");
+            if (sb == null || eb == null || sb.equals(eb)) {
+                continue;
+            }
+            miniTaskId = XposedHelpers.getIntField(taskInfo, "taskId");
+            miniTransformFlag = Boolean.TRUE.equals(
+                    XposedHelpers.callMethod(change, "hasFlags", Integer.valueOf(33554432)));
+            break;
+        }
+        if (miniTaskId < 0) {
+            return;
+        }
+        String kind;
+        if (hasDisplayChange) {
+            // A8: 回竖屏旋转
+            if (!takeRecentFfAnimStart(miniTaskId)) {
+                return;
+            }
+            kind = "rotation";
+        } else {
+            // A10: 横屏 OneStep 飞行
+            if (!miniTransformFlag || landscapeRotation(param.thisObject) == 0) {
+                return; // 竖屏/非 mini transform: 保持 stock 飞行
+            }
+            synchronized (sFfAnimStart) {
+                sFfAnimStart.put(miniTaskId, SystemClock.uptimeMillis());
+            }
+            kind = "flight";
+        }
+        Object startTx = param.args[2];
+        XposedHelpers.callMethod(startTx, "apply");
+        final Object finishCb = param.args[4];
+        Object transitions = XposedHelpers.getObjectField(param.thisObject, "mTransitions");
+        Object executor = XposedHelpers.callMethod(transitions, "getMainExecutor");
+        XposedHelpers.callMethod(executor, "execute", (Object) new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    XposedHelpers.callMethod(finishCb, "onTransitionFinished",
+                            (Object) null, (Object) null);
+                } catch (Throwable t) {
+                    Port.log("FreeformFx: " + "transition finish callback failed", t);
+                }
+            }
+        });
+        param.setResult(Boolean.TRUE);
+        Port.log("FreeformFx: " + kind + " jump-cut task=" + miniTaskId);
+    }
+
+    /** (A10) FTT.mContext 当前 display rotation, 失败返回 0 (视为竖屏不命中) */
+    private static int landscapeRotation(Object handler) {
+        try {
+            Object ctx = XposedHelpers.getObjectField(handler, "mContext");
+            Object display = XposedHelpers.callMethod(ctx, "getDisplay");
+            return (Integer) XposedHelpers.callMethod(display, "getRotation");
+        } catch (Throwable t) {
+            Port.log("FreeformFx: display rotation read failed", t);
+            return 0;
+        }
+    }
+
+    /** (A8) 命中并移除近期 mini 飞行标记 */
+    private static boolean takeRecentFfAnimStart(int taskId) {
+        synchronized (sFfAnimStart) {
+            Long at = sFfAnimStart.remove(taskId);
+            return at != null && SystemClock.uptimeMillis() - at.longValue() <= FF_RECENT_MS;
+        }
+    }
+
+    private static void pruneFfAnimStartLocked() {
+        long now = SystemClock.uptimeMillis();
+        Iterator<Map.Entry<Integer, Long>> it = sFfAnimStart.entrySet().iterator();
+        while (it.hasNext()) {
+            if (now - it.next().getValue().longValue() > FF_RECENT_MS) {
+                it.remove();
+            }
+        }
     }
 
     /**

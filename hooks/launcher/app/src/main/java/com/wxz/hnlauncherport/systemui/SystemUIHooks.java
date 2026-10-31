@@ -817,6 +817,14 @@ public final class SystemUIHooks {
         // (7) 悬浮窗手势/动效优化 (独立类, 各自 try-catch)
         FreeformFx.install(cl);
 
+        // (8) 旋转建议: 手势导航启用旋转建议悬浮球 (独立类, 内部无 try-catch 包裹,
+        //     install 自身置于 try 内保证失败不阻断)
+        try {
+            RotationSuggest.install(cl);
+        } catch (Throwable t) {
+            Port.log("SystemUIHooks: rotation suggest install failed", t);
+        }
+
         Port.log("SystemUIHooks installed");
     }
 

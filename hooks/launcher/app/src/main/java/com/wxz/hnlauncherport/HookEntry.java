@@ -98,6 +98,11 @@ public class HookEntry implements IXposedHookLoadPackage {
             Port.log("OneStepThresholds install failed", t);
         }
         try {
+            com.wxz.hnlauncherport.onestep.OneStepLandscapeJumpEnd.install(lpparam.classLoader);
+        } catch (Throwable t) {
+            Port.log("OneStepLandscapeJumpEnd install failed", t);
+        }
+        try {
             com.wxz.hnlauncherport.card.IconCardBlocker.install(lpparam.classLoader);
         } catch (Throwable t) {
             Port.log("IconCardBlocker install failed", t);

@@ -115,8 +115,21 @@ public final class ScaleComposer {
      * that only need a monotonic fraction (RoundImageView progress etc.).
      */
     public float eval(float x) {
+        return eval(x, 0f);
+    }
+
+    /**
+     * Real-clock evaluation (cdW/cdH/cdScale): t = linear fraction x
+     * durationSec in REAL seconds - each spring settles at its OWN settle
+     * and rests afterwards (CD unified-clock semantics,
+     * GetSpringAnimationVisibleTick); v0 is not diluted by
+     * settleSec/duration stretching. durationSec <= 0 falls back to the
+     * legacy normalized clock (t = x * settleSec, all springs stretched
+     * to finish exactly at the animator end).
+     */
+    public float eval(float x, float durationSec) {
         float xn = clamp(x, 0f, 1f);
-        float t = xn * settleSec;
+        float t = xn * (durationSec > 0f ? durationSec : settleSec);
         // CD Width/Height 弹簧 Math.Max(0, ...) (MainPage.xaml.cs:423-424):
         // 目标 0 (无图标点目标) 时下冲负值 = 镜像, 钳 0.
         float cdW = Math.max(0f, underDamped(t, wFrom, wTo, CurveDemoSpring.zetaWH(), 0f));

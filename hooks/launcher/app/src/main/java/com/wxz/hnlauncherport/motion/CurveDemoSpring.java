@@ -118,6 +118,17 @@ public final class CurveDemoSpring {
                 ? Port.getFloat(Port.KEY_MP_DURATION, 1.0f) : 1.0f));
     }
 
+    /**
+     * 背景层 (workspace/hotseat) 回桌时长 (ms): 800ms 基线 x 时长系数
+     * (path 开), 与前景窗口层的 max-settle 时长解耦 - getScaleDuration /
+     * getStartOffset 按比例重映射, 背景不再被 MotionDur 的 max settle
+     * 拉长.
+     */
+    public static long bgAnimDurationMs() {
+        return Math.round(800f * (Port.on(Port.KEY_MOTION_PATH)
+                ? Port.getFloat(Port.KEY_MP_DURATION, 1.0f) : 1.0f));
+    }
+
     // Gesture-handoff transfer (MainPage.xaml.cs:2384-2386): finger speed
     // in UWP DIP/ms divided by 1e4, result in value-per-tick (1 tick = 1e-7
     // s). Converting DIP/ms -> px/s and per-tick -> per-second cancels the

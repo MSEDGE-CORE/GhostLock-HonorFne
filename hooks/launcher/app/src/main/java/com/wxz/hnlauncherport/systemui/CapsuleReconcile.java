@@ -34,7 +34,7 @@ public final class CapsuleReconcile {
     private static final String RECORD_CLASS =
             "com.hihonor.systemui.dynamicserver.record.CapsuleRecord";
     private static final String AMEX_CLASS = "com.hihonor.android.app.ActivityManagerEx";
-    private static final long RECONCILE_DELAY_MS = 1000L;
+    private static final long RECONCILE_DELAY_MS = 2000L;
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static Class<?> sAmEx;
