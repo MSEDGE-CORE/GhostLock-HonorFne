@@ -169,7 +169,7 @@ public final class CurveDemoSpring {
         if (t <= 0f) {
             return 1f;
         }
-        double dur = Math.max(0.05, 0.8 * coeff);
+        double dur = Math.max(0.05, 0.5 * coeff);
         double w = 4.0 * Math.PI / dur;
         double v = (1.0 + w * t) * Math.exp(-w * t);
         return (float) Math.max(0.0, Math.min(1.0, v));

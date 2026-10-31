@@ -791,11 +791,9 @@ public final class MotionReturnHome {
                 //   RvY = vy*(0.5-F)/(1-F)/30*FlyFar/sqrt(T)     = vy*0.0625
                 // 胶囊与普通窗口同一条曲线, 仅目标值 (endPos) 不同.
                 // 横屏-无图标不走 path: s0x/s0y 仅在 rot==0 的 calc 钩子里
-                // 捕获, 横屏无图标建不了组合器 (无 CD 软地板, v0 可俯冲
-                // 负值 -> 闪大/镜像), 回退 v7.5 横屏链 (curveLive/wfsSyn/
-                // classic, 均带钳制). 图标/胶囊 (有尺寸目标) 横屏保持 path.
-                boolean path = Port.on(Port.KEY_MOTION_PATH)
-                        && (liveRot(h) == 0 || isReturnHome || capsule);
+                // 捕获, 横屏无图标建不了组合器
+                boolean path = Port.on(Port.KEY_MOTION_PATH);
+                        //&& (liveRot(h) == 0 || isReturnHome || capsule);
                 boolean curveLive = !path && WindowFollowScale.curveVelFresh();
                 boolean wfsSyn = false;
                 float v0;
@@ -989,7 +987,7 @@ public final class MotionReturnHome {
                     // ScaleY), 即 s0; 退化兜底用目标 ratio.
                     float scaleCur = s0Valid ? s0y : ratio;
                     // capsule cdScale 初速度 x3 (per tuning).
-                    v0 = (CurveDemoSpring.scaleV0(vy, span, scaleCur) * -1f) * (isIcon || capsule ? 1f : 1.2f);
+                    v0 = (CurveDemoSpring.scaleV0(vy, span, scaleCur) * -1f) * (isIcon || capsule ? 1f : 1.0f);
                     // 无图标 (退化点目标 w/h=0) 也建组合器: 单弹簧兜底
                     // 没有 CD 的 minScale 软地板 (MainPage.xaml.cs:410-
                     // 417, 点目标地板 0.1 + W/H Math.Max(0,...)), 速度
@@ -1018,7 +1016,7 @@ public final class MotionReturnHome {
                             currentComposer = new ScaleComposer(targetW,
                                     targetH, screen.x, screen.y, s0x, s0y,
                                     v0, rectF.top, capsule ? 0.05f
-                                            : (isIcon ? 0f : 0.1f));
+                                            : (isIcon ? 0f : 0.05f)); //无图标和灵动胶囊的地板在这
                             composerBuilt = true;
                             Port.log("MotionScaleCompose " + currentComposer.describe()
                                     + " s0x=" + s0x + " s0y=" + s0y

@@ -28,6 +28,7 @@ public final class Port {
     public static final String KEY_MP_ZETA_SCALE = "hn_port_mp_zeta_scale"; // float 缩放弹簧 zeta 0.5-1.5, 默认 0.86
     public static final String KEY_MP_ZETA_WH = "hn_port_mp_zeta_wh";       // float 宽高弹簧 zeta 0.5-1.5, 默认 0.82
     public static final String KEY_PARALLEL = "hn_port_parallel";   // 1 = 连续切换应用: click new icon kills prev app anim immediately + canBreak bypass
+    public static final String KEY_CAPSULE_RECONCILE = "hn_port_capsule_reconcile"; // 1 = 灵动胶囊状态刷新: reShow guard + 1000ms 对账
     public static final String KEY_BLUR = "hn_port_blur";           // 1 = force transition blur on all models
     public static final String KEY_ICON_HIDE = "hn_port_icon_hide"; // 1 = hide launching icon during app-open anim (large-folder fix)
     public static final String KEY_WIN_SCALE = "hn_port_win_scale"; // 1 = V17-style swipe-up window trajectory (converge toward W/2, 0.3H)

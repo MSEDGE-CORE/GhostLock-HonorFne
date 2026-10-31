@@ -388,6 +388,10 @@ private fun SettingsScreen() {
                 else -> {
                     SettingsSection("状态栏") {
                         SettingsSwitchItem(ToggleRow(
+                            "灵动胶囊状态刷新", "打开对应应用时 灵动胶囊及时收起",
+                            Port.KEY_CAPSULE_RECONCILE
+                        ), true)
+                        SettingsSwitchItem(ToggleRow(
                             "禁用状态栏自动缩小", "灵动胶囊启用时，状态栏保持大尺寸",
                             Port.KEY_SB_NO_SHRINK
                         ), true)
@@ -660,7 +664,7 @@ private fun MotionPathDialog(onDismiss: () -> Unit) {
     var dur by remember {
         mutableFloatStateOf(
             Settings.Global.getFloat(
-                context.contentResolver, Port.KEY_MP_DURATION, 1.0f).coerceIn(0.8f, 1.5f))
+                context.contentResolver, Port.KEY_MP_DURATION, 1.0f).coerceIn(0.5f, 1.5f))
     }
     var inertia by remember {
         mutableFloatStateOf(
