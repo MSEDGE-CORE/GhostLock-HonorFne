@@ -36,8 +36,8 @@ import de.robv.android.xposed.XposedHelpers;
  * 而非 handleMotionEvent (部分路径被 MultiWindowGestureDetector 抢走).
  * (G4) 角落缩放甩动挂角: 左下(9)/右下(10)角缩放松手, 窗口正在缩小且速度
  * >=1000px/s -> 直接挂到对角.
- * (G5) 底边快速上滑: 未到最小 -> 挂起为小窗; 已到最小(橙色) -> stock 关闭.
- * (G6) 挂起行为对调: 慢速滑到最小(橙色)松手 -> 关闭 (stock 为挂起);
+ * (G5) 底边快速上滑: 一律挂起为小窗 (含已到最小/橙色).
+ * (G6) 慢速松手: 未到最小 -> stock settle; 滑到最小(橙色) -> 也挂起;
  * 快速挂起先 stashLive 传递平滑缩放 (动效优化);
  * 挂起小窗左右角判定: 窗口中心 X < 屏宽 1/3 -> 左上, 其余 -> 右上
  * (stock: 屏宽 1/2 对半分).
@@ -149,7 +149,6 @@ public final class FreeformFx {
 
     private static final ThreadLocal<Boolean> sFastFling = new ThreadLocal<>();
 
-    private static final ThreadLocal<Boolean> sCloseGuard = new ThreadLocal<>();
     /** (A8) task -> setIsFreeformAnimRunning(taskId,true) 时刻 */
     private static final Map<Integer, Long> sFfAnimStart = new HashMap<>();
     private static ClassLoader sCl;
@@ -270,9 +269,8 @@ public final class FreeformFx {
                     }
                 });
 
-        // (G5) 底边快速上滑: 未到最小(非橙色) -> 挂起为小窗; 已到最小(橙色)
-        // -> 放行 stock onDragPositioningCancel(2) 关闭 (滑到最小-关闭).
-        // 分类以松手缩放状态为准, 不依赖 stock 速度判定 (拖到最小的松手
+        // (G5) 底边快速上滑: 一律重定向挂起为小窗 (含已到最小/橙色).
+        // 分类不依赖 stock 速度判定 (拖到最小的松手
         // 速度常仍超阈值, 会被误判为快速上滑).
         XposedHelpers.findAndHookMethod(pos, "onDragPositioningCancel",
                 float.class, float.class, int.class, new XC_MethodHook() {
@@ -284,16 +282,7 @@ public final class FreeformFx {
                         if (((Integer) param.args[2]).intValue() != 2) {
                             return; // 仅快速上滑路径
                         }
-                        if (Boolean.TRUE.equals(sCloseGuard.get())) {
-                            return; // G6 慢速滑到最小 -> 关闭的内部调用, 放行 stock 关闭
-                        }
                         try {
-                            float cur = XposedHelpers.getFloatField(param.thisObject, "mCurScale");
-                            float init = XposedHelpers.getFloatField(param.thisObject, "mInitialScale");
-                            float mini = XposedHelpers.getFloatField(param.thisObject, "mMiniWindowScale");
-                            if (cur * init - mini < 0.01f) {
-                                return; // 已到最小(橙色): 走 stock 关闭
-                            }
                             sFastFling.set(Boolean.TRUE);
                             Object r;
                             try {
@@ -313,8 +302,8 @@ public final class FreeformFx {
                     }
                 });
 
-        // (G6) 挂起行为对调: 快速上滑 -> 挂起 (跳过橙色校验); 慢速滑到最小(橙色)
-        // 松手 -> 关闭 (走 stock onDragPositioningCancel(2), 由 sCloseGuard 放行).
+        // (G6) 慢速松手: 未到最小 -> 交回 stock (settle); 滑到最小(橙色)
+        // -> 也走挂起. 快速上滑跳过橙色校验.
         // 挂起左右角判定: 窗口中心 X < 屏宽 1/3 -> 左上(1), 其余 -> 右上(2)
         // (stock: 屏宽 1/2 对半分).
         final Class<?> ffUtils = XposedHelpers.findClass(FF_UTILS_CLS, cl);
@@ -341,18 +330,7 @@ public final class FreeformFx {
                                 if (cur * init - mini >= 0.01f) {
                                     return; // 慢速未到最小, 交回 stock (settle)
                                 }
-                                // 慢速滑到最小(橙色) -> 关闭
-                                sCloseGuard.set(Boolean.TRUE);
-                                try {
-                                    XposedHelpers.callMethod(positioner,
-                                            "onDragPositioningCancel", 0f, 0f, 2);
-                                } finally {
-                                    sCloseGuard.set(null);
-                                }
-                                param.setResult(Boolean.TRUE);
-                                Port.log("FreeformFx: orange slow release -> close task="
-                                        + positionerTaskId(positioner));
-                                return;
+                                // 慢速滑到最小(橙色) -> 也挂起
                             }
                             Object optional = XposedHelpers.getObjectField(
                                     positioner, "mHnFreeformControllerOptional");
