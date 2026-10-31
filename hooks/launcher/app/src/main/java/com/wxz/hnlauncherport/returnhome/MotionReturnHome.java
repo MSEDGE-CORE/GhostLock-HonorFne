@@ -132,6 +132,14 @@ public final class MotionReturnHome {
 
     /** path 模式本手势 trans 弹簧的 CD 可见 settle 时长 (ms, X/Y 取 max). */
     private static volatile long pathTransSettleMs = 0L;
+    /**
+     * 无图标/胶囊 X 速率救活 (lambda$3 :1451): 短扫松手时 from/to 均水平居中
+     * -> 消费端 delta (newPositionX - translationX) = 0, X(t) 恒 0, v0 再大
+     * 也被乘没. 修法: transHook(X) 把弹簧 endPos 改 1px*sgn(v0) 并 stash,
+     * calcHook after 把消费端 newPositionX 同步 +1px*sgn(v0), 弹簧过冲显形
+     * X 速率 (峰 ~v0/(e*w)), 落点仅 1px 偏移 (不可见). 0 = 未启用.
+     */
+    private static volatile float sNoIconXDelta = 0f;
     private static float s0x = 1f;
     private static float s0y = 1f;
     private static boolean s0Valid;
@@ -313,6 +321,32 @@ public final class MotionReturnHome {
                                     + " bad=" + str(to) + " -> " + str(fixed));
                         } catch (Throwable t) {
                             Port.log("MotionCalc failed", t);
+                        }
+                    }
+
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        // 无图标/胶囊 X 速率救活 (消费端): transHook(X) 在
+                        // calc 体内 stash 了 1px*sgn(v0), 这里同步
+                        // newPositionX 使 delta 非 0, v0 得以显形.
+                        if (!motionEnabled()) {
+                            return;
+                        }
+                        float delta = sNoIconXDelta;
+                        if (delta == 0f || (Boolean) param.args[3]) {
+                            return;
+                        }
+                        try {
+                            Object p = param.getResult();
+                            if (p == null) {
+                                return;
+                            }
+                            float tX = XposedHelpers.getFloatField(p, "translationX");
+                            XposedHelpers.setFloatField(p, "newPositionX", tX + delta);
+                            sNoIconXDelta = 0f;
+                            Port.log("MotionCalcXDelta tX=" + tX + " delta=" + delta);
+                        } catch (Throwable t) {
+                            Port.log("MotionCalcXDelta failed", t);
                         }
                     }
                 });
@@ -749,6 +783,10 @@ public final class MotionReturnHome {
                     if (!motionEnabled()) {
                         return;
                     }
+                    if (isX) {
+                        // 每次手势 X 弹簧先清消费端 delta stash (calcHook after 消费).
+                        sNoIconXDelta = 0f;
+                    }
                     boolean capsule = isCapsule();
                     RectF from = (RectF) param.args[0];
                     RectF to = (RectF) param.args[1];
@@ -809,8 +847,7 @@ public final class MotionReturnHome {
                     //    screenSpeed (保留横屏 rot 映射).
                     float speed;
                     if (!isReturnHome) {
-                        speed = XposedHelpers.getFloatField(h,
-                                isX ? "mTransSpeedX" : "mTransSpeedY");
+                        speed = XposedHelpers.getFloatField(h,isX ? "mTransSpeedX" : "mTransSpeedY");
                     } else {
                         speed = screenSpeed(h, true, isX, rot);
                     }
@@ -899,6 +936,16 @@ public final class MotionReturnHome {
                         // -2..919, same order).
                         v0 = Math.max(-500f, Math.min(500f, speed * 0.25f));
                     }
+                }
+
+                // 无图标/胶囊短扫 X 速率救活: from/to 均居中 -> delta=0,
+                // 消费端把 v0 乘没. 弹簧目标改 1px*sgn(v0) (峰值过冲 ~v0/(e*w)
+                // 显形 X 速率, 落点 1px 偏移不可见), stash 给 calcHook after
+                // 同步消费端 newPositionX. 仅竖屏 (rot!=0 消费端坐标系不同).
+                if (isX && !isReturnHome && rot == 0
+                        && Math.abs(endPos) < 1f && Math.abs(v0) > 1f) {
+                    endPos = 1f * Math.signum(v0);
+                    sNoIconXDelta = endPos;
                 }
 
                 float stiffness;
