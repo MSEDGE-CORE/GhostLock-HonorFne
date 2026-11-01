@@ -161,6 +161,8 @@ private fun SettingsScreen() {
     var showUnlockDialog by remember { mutableStateOf(false) }
     var showThresholdDialog by remember { mutableStateOf(false) }
     var showMotionDialog by remember { mutableStateOf(false) }
+    var showBlurDialog by remember { mutableStateOf(false) }
+    var showCcBlurDialog by remember { mutableStateOf(false) }
 
     if (showUnlockDialog) {
         UnlockAnimDialog(onDismiss = { showUnlockDialog = false })
@@ -170,6 +172,14 @@ private fun SettingsScreen() {
     }
     if (showThresholdDialog) {
         OneStepThresholdDialog(onDismiss = { showThresholdDialog = false })
+    }
+    if (showBlurDialog) {
+        FollowPsDialog("高级模糊", Port.KEY_BLUR_FOLLOW_PS,
+            onDismiss = { showBlurDialog = false })
+    }
+    if (showCcBlurDialog) {
+        FollowPsDialog("高级模糊", Port.KEY_CC_REAL_BLUR_FOLLOW_PS,
+            onDismiss = { showCcBlurDialog = false })
     }
 
     val restartTarget = pendingRestart
@@ -196,7 +206,7 @@ private fun SettingsScreen() {
             Port.KEY_MOTION, listOf(Port.KEY_ICON_HIDE)),
         ToggleRow("锚点优化", "窗口向0.2移动缩小", Port.KEY_WIN_SCALE),
         ToggleRow("连续切换应用", "立即停止上一个窗口", Port.KEY_PARALLEL),
-        ToggleRow("高级模糊", "启用高端机型的模糊效果，优化部分速率曲线", Port.KEY_BLUR),
+        ToggleRow("高级模糊...", "启用高端机型的模糊效果，优化部分速率曲线", Port.KEY_BLUR),
         ToggleRow("高级图标入场...", "分组扩散，渐进弹簧（需重启桌面）", Port.KEY_ADV_UNLOCK_ANIM)
     ) }
     // 手势与行为
@@ -366,6 +376,7 @@ private fun SettingsScreen() {
                                 onRowClick = when (row.key) {
                                     Port.KEY_ADV_UNLOCK_ANIM -> { { showUnlockDialog = true } }
                                     Port.KEY_MOTION -> { { showMotionDialog = true } }
+                                    Port.KEY_BLUR -> { { showBlurDialog = true } }
                                     else -> null
                                 }
                             )
@@ -418,9 +429,9 @@ private fun SettingsScreen() {
                             Port.KEY_CC_GLOBAL_SWIPE
                         ), true)
                         SettingsSwitchItem(ToggleRow(
-                            "高级模糊", "模糊半径跟手变化",
+                            "高级模糊...", "模糊半径跟手变化",
                             Port.KEY_CC_REAL_BLUR
-                        ), true)
+                        ), true, onRowClick = { showCcBlurDialog = true })
                     }
                     SettingsSection("锁屏") {
                         SettingsSwitchItem(ToggleRow(
@@ -1008,6 +1019,46 @@ private fun OneStepThresholdDialog(onDismiss: () -> Unit) {
             Row {
                 TextButton(onClick = onDismiss) { Text("取消") }
             }
+        }
+    )
+}
+
+/**
+ * 高级模糊 dialog (桌面/控制中心高级模糊行点击弹出):
+ *  - 跟随省电模式 toggle: 开启后省电模式中自动停用模糊, 退出省电恢复.
+ */
+@Composable
+private fun FollowPsDialog(title: String, key: String, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    var followPs by remember { mutableStateOf(readKey(context, key)) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("跟随省电模式", fontSize = 15.sp)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Switch(
+                        checked = followPs,
+                        onCheckedChange = { on ->
+                            if (writeKey(context, key, on)) {
+                                followPs = on
+                            } else {
+                                Toast.makeText(context, "写入失败", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("确定") }
         }
     )
 }

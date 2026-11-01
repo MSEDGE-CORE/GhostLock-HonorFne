@@ -56,11 +56,14 @@ public final class FolderBgBlur {
         Class<?> folderIconCls = XposedHelpers.findClass(FOLDER_ICON_CLS, cl);
 
         // (1) 启用文件夹动态模糊链路 (背景图标缩小 + RenderEffect 模糊).
+        //     省电中 (跟随省电模式) 不强推 TRUE, 链路回 stock 关闭形态;
+        //     :77/:104 的时长调整不归省电管辖, 保持不动.
         XposedHelpers.findAndHookMethod(cardAnimCls, "getUseSpaceHierarchyAnim",
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        if (!Port.on(Port.KEY_BLUR)) {
+                        if (!Port.on(Port.KEY_BLUR)
+                                || com.wxz.hnlauncherport.blur.ForceBlur.blurPsOff()) {
                             return;
                         }
                         if (!Boolean.TRUE.equals(param.getResult())) {

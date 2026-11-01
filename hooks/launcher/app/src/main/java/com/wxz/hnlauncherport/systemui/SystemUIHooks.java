@@ -60,6 +60,9 @@ public final class SystemUIHooks {
     private static int sCurBlurRadius = 0;
     /** 已对同一 view 写过 radius=0 的去重标记 (跳过重复 0 写入). */
     private static WeakReference<View> sZeroBlurView = new WeakReference<View>(null);
+    /** (5c) 省电模式缓存 (3s 节流查询), "跟随省电模式"分支用. */
+    private static volatile boolean sPowerSave;
+    private static volatile long sPowerSaveCheckedAt;
     /** cancelPanelAnimator 状态保护: {View, alpha, translationY, visibility}. */
     private static final ArrayList<Object[]> sCancelSaved = new ArrayList<Object[]>();
 
@@ -207,7 +210,7 @@ public final class SystemUIHooks {
         XposedHelpers.findAndHookMethod(View.class, "setAlpha", float.class, new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                if (!Port.on(Port.KEY_CC_REAL_BLUR)) {
+                if (!blurOn()) {
                     return;
                 }
                 if (!shotBlurCls.isInstance(param.thisObject)) {
@@ -237,7 +240,7 @@ public final class SystemUIHooks {
                     new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    if (!Port.on(Port.KEY_CC_REAL_BLUR) || !hasBlurLpField[0]) {
+                    if (!blurOn() || !hasBlurLpField[0]) {
                         return;
                     }
                     Object ctrl = param.thisObject;
@@ -346,7 +349,7 @@ public final class SystemUIHooks {
                     float.class, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    if (!Port.on(Port.KEY_CC_REAL_BLUR)) {
+                    if (!blurOn()) {
                         return;
                     }
                     Object impl = param.thisObject;
@@ -894,6 +897,41 @@ public final class SystemUIHooks {
         }
     }
 
+    /** (5c) 高级模糊有效判定: 总开关开 + ("跟随省电模式"关 或 当前非省电).
+     *  省电时真窗口模糊停用 (stock 静态快照层照常), 逐帧循环也随之停转;
+     *  省电态经 Settings.System SmartModeStatus (1=正常/3=超级省电/4=普通
+     *  省电, PowerManager/LOW_POWER 恒 0 不可用) 3s 节流查询. shade ctrl 未就绪时按非省电处理. */
+    private static boolean blurOn() {
+        if (!Port.on(Port.KEY_CC_REAL_BLUR)) {
+            return false;
+        }
+        if (!Port.on(Port.KEY_CC_REAL_BLUR_FOLLOW_PS)) {
+            return true;
+        }
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (now - sPowerSaveCheckedAt > 3000L) {
+            sPowerSaveCheckedAt = now;
+            try {
+                Object ctrl = sShadeCtrl.get();
+                if (ctrl != null) {
+                    Object c = XposedHelpers.getObjectField(ctrl, "mContext");
+                    if (c instanceof android.content.Context) {
+                        // 荣耀省电不走 PowerManager/LOW_POWER (恒 0/残留),
+                        // 以 Settings.System SmartModeStatus 为准: 1=正常,
+                        // 3=超级省电, 4=普通省电.
+                        int mode = android.provider.Settings.System.getInt(
+                                ((android.content.Context) c).getContentResolver(),
+                                "SmartModeStatus", 1);
+                        sPowerSave = mode == 3 || mode == 4;
+                    }
+                }
+            } catch (Throwable t) {
+                Port.log("SystemUIHooks: power save check failed", t);
+            }
+        }
+        return !sPowerSave;
+    }
+
     /** 逐帧重放: surface 重建/窗口 relayout 会重置背景模糊半径 (子面板
      *  打开, 长按, 通知详情, 上滑接管等), stock 的静态层是 view 内部位图
      *  不受影响, 而我们的真窗口模糊会被清掉. 每帧按快照层实时 alpha 重写,
@@ -907,6 +945,11 @@ public final class SystemUIHooks {
                 new android.view.Choreographer.FrameCallback() {
             @Override
             public void doFrame(long frameTimeNanos) {
+                if (!blurOn()) { // 省电中/开关关闭: 半径清零并停转
+                    applyShadeBlur(shadeCtrlCls, 0f);
+                    sBlurLoopRunning = false;
+                    return;
+                }
                 View v = sBlurView.get();
                 if (v == null || v.getVisibility() != View.VISIBLE) {
                     applyShadeBlur(shadeCtrlCls, 0f); // 半径清零

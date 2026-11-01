@@ -45,6 +45,40 @@ public final class ForceBlur {
     private static final long EXIT_FADE_MS = 133L;
     /** Task 25: icon-layer scale the enter-recents settle must land on. */
     private static final float SETTLED_ICON_SCALE = 0.9f;
+    /** 省电模式缓存 (3s 节流查询), 桌面模糊"跟随省电模式"分支用. */
+    private static volatile boolean sPowerSave;
+    private static volatile long sPowerSaveCheckedAt;
+
+    /** "跟随省电模式"生效且当前省电中 (SmartModeStatus 3/4): 所有桌面模糊
+     *  hook 一律跳过 (不改写任何 stock 值), 模糊链回到模块未启用的原生
+     *  形态; 文件夹速率曲线 (FolderOpenSpeed, 77/104) 不受管辖, 省电中
+     *  照常. */
+    public static boolean blurPsOff() {
+        if (!Port.on(Port.KEY_BLUR_FOLLOW_PS)) {
+            return false;
+        }
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (now - sPowerSaveCheckedAt > 3000L) {
+            sPowerSaveCheckedAt = now;
+            try {
+                Object app = XposedHelpers.callStaticMethod(
+                        XposedHelpers.findClass("android.app.ActivityThread", null),
+                        "currentApplication");
+                if (app instanceof android.content.Context) {
+                    // 荣耀省电不走 PowerManager/LOW_POWER (恒 0/残留),
+                    // 以 Settings.System SmartModeStatus 为准: 1=正常,
+                    // 3=超级省电, 4=普通省电.
+                    int mode = android.provider.Settings.System.getInt(
+                            ((android.content.Context) app).getContentResolver(),
+                            "SmartModeStatus", 1);
+                    sPowerSave = mode == 3 || mode == 4;
+                }
+            } catch (Throwable t) {
+                Port.log("ForceBlur: power save check failed", t);
+            }
+        }
+        return sPowerSave;
+    }
 
     public static void install(ClassLoader cl) {
         try {
@@ -52,9 +86,9 @@ public final class ForceBlur {
             XposedHelpers.findAndHookMethod(u, "isEnableWindowBlur", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    if (Port.on(Port.KEY_BLUR)) {
+                    if (Port.on(Port.KEY_BLUR) && !blurPsOff()) {
                         param.setResult(Boolean.TRUE);
-                    }
+                    } // 省电中跳过 hook, stock 自行决定
                 }
             });
 
@@ -62,18 +96,18 @@ public final class ForceBlur {
             XposedHelpers.findAndHookMethod(lp, "isLightWeightBlurEffectEnabled", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    if (Port.on(Port.KEY_BLUR)) {
+                    if (Port.on(Port.KEY_BLUR) && !blurPsOff()) {
                         param.setResult(Boolean.FALSE);
-                    }
+                    } // 省电中跳过 hook, stock 自行决定
                 }
             });
             try {
                 XposedHelpers.findAndHookMethod(lp, "isCutBlurEffect", new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        if (Port.on(Port.KEY_BLUR)) {
+                        if (Port.on(Port.KEY_BLUR) && !blurPsOff()) {
                             param.setResult(Boolean.FALSE);
-                        }
+                        } // 省电中跳过 hook, stock 自行决定
                     }
                 });
             } catch (Throwable ignore) {
@@ -84,9 +118,9 @@ public final class ForceBlur {
                 XposedHelpers.findAndHookMethod(lm, "isBlurShowAccessibility", new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        if (Port.on(Port.KEY_BLUR)) {
+                        if (Port.on(Port.KEY_BLUR) && !blurPsOff()) {
                             param.setResult(Boolean.TRUE);
-                        }
+                        } // 省电中跳过 hook, stock 自行决定
                     }
                 });
             } catch (Throwable t) {
@@ -98,9 +132,9 @@ public final class ForceBlur {
                 XposedHelpers.findAndHookMethod(sm, "getUseSpaceHierarchyAnim", new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        if (Port.on(Port.KEY_BLUR)) {
+                        if (Port.on(Port.KEY_BLUR) && !blurPsOff()) {
                             param.setResult(Boolean.TRUE);
-                        }
+                        } // 省电中跳过 hook, stock 自行决定
                     }
                 });
             } catch (Throwable t) {
@@ -127,7 +161,7 @@ public final class ForceBlur {
                             @Override
                             protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                                 beforeAnim = null;
-                                if (!Port.on(Port.KEY_BLUR)) {
+                                if (!Port.on(Port.KEY_BLUR) || blurPsOff()) {
                                     return;
                                 }
                                 int scene = (Integer) param.args[0];
@@ -184,7 +218,7 @@ public final class ForceBlur {
 
                             @Override
                             protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                                if (!Port.on(Port.KEY_BLUR)) {
+                                if (!Port.on(Port.KEY_BLUR) || blurPsOff()) {
                                     return;
                                 }
                                 int scene = (Integer) param.args[0];
@@ -243,7 +277,7 @@ public final class ForceBlur {
                         float.class, boolean.class, new XC_MethodHook() {
                             @Override
                             protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                                if (!Port.on(Port.KEY_BLUR)) {
+                                if (!Port.on(Port.KEY_BLUR) || blurPsOff()) {
                                     return;
                                 }
                                  // per-frame 探针: 仅调试时开 (帧路径 socket 写日志会阻塞主线程)
@@ -328,7 +362,7 @@ public final class ForceBlur {
                         float.class, stateCls25, float.class, new XC_MethodHook() {
                             @Override
                             protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                                if (!Port.on(Port.KEY_BLUR)) {
+                                if (!Port.on(Port.KEY_BLUR) || blurPsOff()) {
                                     return;
                                 }
                                 Object target = param.args[1];
@@ -375,7 +409,7 @@ public final class ForceBlur {
                         boolean.class, boolean.class, new XC_MethodHook() {
                             @Override
                             protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                                if (!Port.on(Port.KEY_BLUR)) {
+                                if (!Port.on(Port.KEY_BLUR) || blurPsOff()) {
                                     return;
                                 }
                                 try {
@@ -420,7 +454,7 @@ public final class ForceBlur {
                         boolean.class, new XC_MethodHook() {
                             @Override
                             protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                                if (!Port.on(Port.KEY_BLUR)) {
+                                if (!Port.on(Port.KEY_BLUR) || blurPsOff()) {
                                     return;
                                 }
                                 try {
@@ -459,9 +493,9 @@ public final class ForceBlur {
                 XposedHelpers.findAndHookMethod(gsu, "isEnableWindowBlur", new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        if (Port.on(Port.KEY_BLUR)) {
+                        if (Port.on(Port.KEY_BLUR) && !blurPsOff()) {
                             param.setResult(Boolean.TRUE);
-                        }
+                        } // 省电中跳过 hook, stock 自行决定
                     }
                 });
                 Port.log("ForceBlur search-blur hooked");
