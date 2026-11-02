@@ -152,9 +152,32 @@ private data class ToggleRow(
 @Composable
 private fun SettingsScreen() {
     val context = LocalContext.current
-    val secure = remember {
-        context.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") ==
-                PackageManager.PERMISSION_GRANTED
+    // WRITE_SECURE_SETTINGS 缺失时自动尝试 root 执行 pm grant,
+    // 成功后刷新 secure, 红色警告随之消失, 开关恢复可用.
+    var secure by remember {
+        mutableStateOf(
+            context.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") ==
+                    PackageManager.PERMISSION_GRANTED
+        )
+    }
+    LaunchedEffect(secure) {
+        if (secure) return@LaunchedEffect
+        val ok = try {
+            val p = ProcessBuilder(
+                "su", "-c",
+                "pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS"
+            ).redirectErrorStream(true).start()
+            p.inputStream.readBytes()
+            p.waitFor()
+            context.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") ==
+                    PackageManager.PERMISSION_GRANTED
+        } catch (t: Throwable) {
+            false
+        }
+        if (ok) {
+            secure = true
+            Toast.makeText(context, "已授权 WRITE_SECURE_SETTNGS", Toast.LENGTH_SHORT).show()
+        }
     }
     var tab by remember { mutableIntStateOf(0) }
     var pendingRestart by remember { mutableStateOf<String?>(null) }
