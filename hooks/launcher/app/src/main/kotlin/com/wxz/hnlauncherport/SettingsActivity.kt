@@ -420,89 +420,98 @@ private fun SettingsScreen() {
                     }
                 }
                 else -> {
+                    if (!secure) {
+                        Text(
+                            "缺少 WRITE_SECURE_SETTINGS 权限，开关无法保存。\n请执行：\n" +
+                                    "pm grant com.wxz.hnlauncherport android.permission.WRITE_SECURE_SETTINGS",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(horizontal = 20.dp)
+                        )
+                    }
                     SettingsSection("状态栏") {
                         SettingsSwitchItem(ToggleRow(
                             "灵动胶囊状态刷新", "打开对应应用时 灵动胶囊及时收起",
                             Port.KEY_CAPSULE_RECONCILE
-                        ), true)
+                        ), secure)
                         SettingsSwitchItem(ToggleRow(
                             "禁用状态栏自动缩小", "灵动胶囊启用时，状态栏保持大尺寸",
                             Port.KEY_SB_NO_SHRINK
-                        ), true)
+                        ), secure)
                         SettingsSwitchItem(ToggleRow(
                             "禁用状态栏元素自动隐藏", "灵动胶囊启用时，状态栏杂项图标不隐藏",
                             Port.KEY_SB_NO_HIDE
-                        ), true)
+                        ), secure)
                         SettingsSwitchItem(ToggleRow(
                             "始终显示灵动胶囊", "胶囊不自动收缩成小图标，可能导致烧屏",
                             Port.KEY_CAPSULE_ALWAYS
-                        ), true)
+                        ), secure)
                     }
                     SettingsSection("控制中心") {
                         SettingsSwitchItem(ToggleRow(
                             "动效优化", "卡片入场优化，横滑切换惯性",
                             Port.KEY_CC_SPRING_VEL
-                        ), true)
+                        ), secure)
                         SettingsSwitchItem(ToggleRow(
                             "状态栏连贯", "进入控制中心时，状态栏连贯移动",
                             Port.KEY_CC_STATUSBAR_CONTINUITY
-                        ), true)
+                        ), secure)
                         SettingsSwitchItem(ToggleRow(
                             "横滑切换区域优化", "通知/控制中心全屏范围横滑切换",
                             Port.KEY_CC_GLOBAL_SWIPE
-                        ), true)
+                        ), secure)
                         SettingsSwitchItem(ToggleRow(
                             "高级模糊...", "模糊半径跟手变化",
                             Port.KEY_CC_REAL_BLUR
-                        ), true, onRowClick = { showCcBlurDialog = true })
+                        ), secure, onRowClick = { showCcBlurDialog = true })
                     }
                     SettingsSection("锁屏") {
                         SettingsSwitchItem(ToggleRow(
                             "隐藏步数", "隐藏锁屏左下角的步数显示",
                             Port.KEY_KG_HIDE_STEPS
-                        ), true)
+                        ), secure)
                         SettingsSwitchItem(ToggleRow(
                             "禁用锁屏工具", "禁用锁屏底部上滑的工具菜单",
                             Port.KEY_KG_NO_TOOLBOX
-                        ), true)
+                        ), secure)
                         SettingsSwitchItem(ToggleRow(
                             "跳过面部解锁动画", "跳过密码界面面部解锁成功的笑脸动画，直接进入桌面",
                             Port.KEY_KG_SKIP_FACE_ANIM
-                        ), true)
+                        ), secure)
                         SettingsSwitchItem(ToggleRow(
                             "单击亮屏", "轻触屏幕以唤醒",
                             Port.KEY_KG_SINGLE_TAP_WAKE
-                        ), true)
+                        ), secure)
                     }
                     SettingsSection("悬浮窗") {
                         SettingsSwitchItem(ToggleRow(
                             "手势优化", "小窗角落向内滑动快速挂起，贴边最小化",
                             Port.KEY_FF_GESTURE
-                        ), true)
+                        ), secure)
                         SettingsSwitchItem(ToggleRow(
                             "动效优化", "平滑最小化，全屏动效连贯",
                             Port.KEY_FF_ANIM
-                        ), true)
+                        ), secure)
                     }
                     SettingsSection("导航键") {
                         SettingsSwitchItem(ToggleRow(
                             "隐藏手势提示条", "隐藏手势提示条，保留底部抬升",
                             Port.KEY_NAV_HANDLE_HIDE
-                        ), true)
+                        ), secure)
                         SettingsSwitchItem(ToggleRow(
                             "禁用手势提示条跟随", "禁用底部手势提示条跟手移动",
                             Port.KEY_NAV_HANDLE_NO_FOLLOW
-                        ), true)
+                        ), secure)
                         SettingsSwitchItem(ToggleRow(
                             "旋转建议", "旋转锁定时显示建议悬浮球",
                             Port.KEY_ROTATION_SUGGEST
-                        ), true)
+                        ), secure)
                     }
                     SettingsSection("杂项") {
                         SettingsSwitchItem(ToggleRow(
                             "固定AOD位置", "禁用AOD自动下移，可能导致烧屏",
                             Port.KEY_AOD_FIX_POS
-                        ), true)
+                        ), secure)
                         RootDisableItem(
                             title = "禁用自动更新",
                             subtitle = "禁用系统自动更新服务（需ROOT权限）",
