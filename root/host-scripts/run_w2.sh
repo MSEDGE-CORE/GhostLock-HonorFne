@@ -28,27 +28,43 @@ E="/data/local/tmp/e"
 SYNC="GL_AIM_DM=1 GL_W1_ATTEMPTS=2 GL_ROUTE_ATTEMPTS=1 GL_HOLD_CHAIN=1 GL_HOLD_WAITER=1 GL_PUNCH_IN_WINDOW=1 GL_PUNCH_DELAY_USEC=0 GL_MCAST_ROUTE=1 GL_PROBE_BOOTID=0 GL_SPRAY_TEST=0 GL_STAMP_SYNC=1"
 
 run_to() { # $1=secs $2=logfile $3...=command
-  # 实时显示: 后台捕获到文件的同时 tail -f 增量回显到控制台
-  # (控制台输出经 run_forever.sh 的 tee 汇入 driver log)
+  # 实时显示：子进程输出直接写日志文件，本函数按行号增量读取回显。
+  # 2026-11-05 修复：旧实现另起 `tail -n +1 -f "$logf" &` 跟随文件，该 tail
+  # 继承了外层 stdout —— 在 run_root.command/run_root.bat 下 stdout 就是
+  # `| tee` 管道的写端；只要这个 tail 残留（kill 时机与 W1/W2 崩溃、设备
+  # 掉线、watchdog 抢占叠加时会发生），管道就永不 EOF，外层 run_forever
+  # 卡死、root 成功后三件套不装。改为一次性 tail -n +N，无长命跟随进程。
   local secs=$1 logf=$2; shift 2
-  "$@" > "$logf" 2>&1 &
+  local shown=0 total=0 rc=0
+  : > "$logf"
+  "$@" >> "$logf" 2>&1 &
   local pid=$!
-  tail -n +1 -f "$logf" 2>/dev/null &
-  local tpid=$!
-  # 看门狗必须: (a) stdout/stderr 重定向到 /dev/null —— 否则被 kill 后孤儿
-  # sleep 持有 run_forever 的 tee 管道, FINAL 后终端假死最长 900s(实测);
-  # (b) 轮询式而非 `sleep N` —— 主进程退出后 ≤2s 自行结束, 不留长命孤儿。
+  # 看门狗：stdout/stderr/stdin 全部脱离（防孤儿持有调用者的 fd），
+  # 轮询式而非 `sleep N`，主进程退出后 ≤2s 自行结束。
   ( end=$((SECONDS + secs))
     while kill -0 "$pid" 2>/dev/null && [ "$SECONDS" -lt "$end" ]; do
       sleep 2
     done
-    kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+    kill "$pid" 2>/dev/null ) >/dev/null 2>&1 </dev/null &
   local wd=$!
-  local rc=0
+  while kill -0 "$pid" 2>/dev/null; do
+    total=$(wc -l < "$logf" 2>/dev/null | tr -d ' ')
+    case "$total" in ''|*[!0-9]*) total=$shown ;; esac
+    if [ "$total" -gt "$shown" ]; then
+      tail -n "+$((shown + 1))" "$logf" | head -n $((total - shown))
+      shown=$total
+    fi
+    sleep 1
+  done
   wait "$pid" || rc=$?
-  kill "$wd" "$tpid" 2>/dev/null
+  # 收尾冲刷：子进程退出瞬间写下的尾部若干行
+  total=$(wc -l < "$logf" 2>/dev/null | tr -d ' ')
+  case "$total" in ''|*[!0-9]*) total=$shown ;; esac
+  if [ "$total" -gt "$shown" ]; then
+    tail -n "+$((shown + 1))" "$logf"
+  fi
+  kill "$wd" 2>/dev/null
   wait "$wd" 2>/dev/null
-  wait "$tpid" 2>/dev/null
   return $rc
 }
 

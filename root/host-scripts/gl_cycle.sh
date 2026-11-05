@@ -63,6 +63,6 @@ for (( n=START; n<START+MAXRUNS; n++ )); do
   ENF=$(adb -s $SN shell getenforce 2>/dev/null | tr -d '\r')
   echo "    enforce=$ENF"
   if [ "$ENF" = "Permissive" ]; then echo "!!! run${n} W1 HIT"; exit 0; fi
-  if grep -q "route BOOTID-PROBE HIT\|ARM-T HIT" "$LOG" 2>/dev/null; then echo "!!! run${n} deep-walk verify HIT in log"; exit 0; fi
+  if grep -qE "route BOOTID-PROBE HIT|ARM-T HIT" "$LOG" 2>/dev/null; then echo "!!! run${n} deep-walk verify HIT in log"; exit 0; fi
 done
 echo "=== cycle done (no W1 in $MAXRUNS runs)"
