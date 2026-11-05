@@ -184,7 +184,7 @@ public final class ScaleComposer {
 
     /** True when the last evaluated frame was already at/near the settle. */
     public boolean atEnd() {
-        return lastProgress >= 0.999f;
+        return lastProgress >= 0.9999f;
     }
 
     /**

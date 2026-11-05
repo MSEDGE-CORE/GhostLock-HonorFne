@@ -247,7 +247,7 @@ public final class CurveDemoSpring {
         if (Math.abs(a) < 1.0e-12f && Math.abs(v0) < 1.0e-12f) {
             return 0f;
         }
-        double ln = Math.log(1000.0);
+        double ln = Math.log(10000.0);
         double zz = (double) zeta * zeta;
         double t;
         if (zz < 1.0) {
