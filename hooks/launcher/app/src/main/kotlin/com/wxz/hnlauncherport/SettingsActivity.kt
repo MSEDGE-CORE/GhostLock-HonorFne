@@ -176,7 +176,7 @@ private fun SettingsScreen() {
         }
         if (ok) {
             secure = true
-            Toast.makeText(context, "已授权 WRITE_SECURE_SETTNGS", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "已授权 WRITE_SECURE_SETTINGS", Toast.LENGTH_SHORT).show()
         }
     }
     var tab by remember { mutableIntStateOf(0) }
