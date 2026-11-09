@@ -51,6 +51,11 @@ import de.robv.android.xposed.XposedHelpers;
  *
  * KEY_FF_ANIM (悬浮窗动效优化):
  * (A1) 拖拽结束快照 live bounds + live scale (mCurScale*mInitialScale).
+ * 快照是一次性的 (A3/A5 各 take 一次), 故新增 A1c: onDragPositioningMove
+ * 持续写 live 镜像 (只读), A5 在快照缺失时回落到镜像. 注意: 不要再引入
+ * "G4 setResult + ThreadLocal 配对消费" 这类标记 —— setResult 之后同一
+ * 方法上注册顺序靠后的 before 不会执行, 标记没有消费方会一路泄漏并吞掉
+ * 下一次 stash (表现为: 挂起→展开→下拉全屏, 起点停在跟手前位置).
  * (A2 已移除) moveToMiniform 不换 startRect: stock rect4 含 X 缩放补偿,
  * 替换会致角落迷你窗 t=0 坐标跳回缩小前位置.
  * (A3) startBoundsAnimator 的 startScale 用 live 快照覆盖.
@@ -152,8 +157,9 @@ public final class FreeformFx {
     /** startFreeformToBackAnimator -> ValueAnimator.setDuration 同线程标记 */
     private static final ThreadLocal<Boolean> sBallMarker = new ThreadLocal<>();
     private static final ThreadLocal<Float> sBallV0 = new ThreadLocal<>();
-    /** 角落甩动已自行 stash 标记 (corner hook -> A1 stash hook) */
-    private static final ThreadLocal<Boolean> sCornerExtra = new ThreadLocal<>();
+    /** (A1c) 拖拽过程持续镜像: onDragPositioningMove 每次覆盖写, 只读消费 */
+    private static final Map<Integer, Live> sDragMirror = new HashMap<>();
+    private static final long MIRROR_TTL_MS = 600L;
 
 
     /** (A8) task -> setIsFreeformAnimRunning(taskId,true) 时刻 */
@@ -266,7 +272,6 @@ public final class FreeformFx {
                                     ctrl, taskId, loc, new Rect(base), (Bundle) null, (Point) null);
                             XposedHelpers.setIntField(positioner, "mCtrlType", 0);
                             XposedHelpers.setBooleanField(positioner, "mHasDragResized", false);
-                            sCornerExtra.set(Boolean.TRUE);
                             param.setResult(null); // 跳过 stock settle
                             Port.log("FreeformFx: corner fling -> miniform task=" + taskId
                                     + " ctrl=" + ctrl + " speed=" + (int) speed);
@@ -432,11 +437,11 @@ public final class FreeformFx {
             }
         });
 
-        // (G9) 扩大角落缩放热区: freeform_resize_corner 30dp -> 60dp.
+        // (G9) 扩大角落缩放热区: freeform_resize_corner 30dp -> 90dp.
         // setGeometry(taskW, taskH, handleThickness, cornerSize, slop) 的
         // arg3 即 cornerSize (getDimensionPixelSize 返回 px, 3x 密度下
         // 30dp=90px, 不能按 ==30 判断), 左下/右下角热区宽 = cornerSize,
-        // 底边条(ctrl 8) 左右各让出 cornerSize; 恒 ×2 (90px->180px=60dp),
+        // 底边条(ctrl 8) 左右各让出 cornerSize; 恒 ×3 (90px->270px=90dp),
         // 调用方每次传原始 dimen 值, 幂等.
         XposedHelpers.findAndHookMethod(
                 XposedHelpers.findClass(
@@ -451,7 +456,7 @@ public final class FreeformFx {
                         int corner = (Integer) param.args[3];
                         if (corner > 0) {
                             param.args[3] = Integer.valueOf(corner * 3);
-                            Port.log("FreeformFx: corner size " + corner + "px -> " + corner * 2 + "px");
+                            Port.log("FreeformFx: corner size " + corner + "px -> " + corner * 3 + "px");
                         }
                     }
                 });
@@ -628,9 +633,22 @@ public final class FreeformFx {
                             synchronized (sLive) {
                                 sLive.remove(taskId);
                             }
+                            synchronized (sDragMirror) {
+                                sDragMirror.remove(taskId);
+                            }
                         }
                     }
                 });
+
+        // (A1c) 拖拽过程持续镜像: 每次 Move 覆盖写该 task 的最新 live 几何.
+        // 与 A1b 的一次性 stash 不同, 镜像只会被 peekMirror 读取, 没有任何
+        // 消费方 remove —— A3 抢先 take 之后 A5 仍能取到起点几何.
+        // 单独 try: 该方法缺失/签名变化时不拖累后面 A1b/A3..A11 的安装.
+        try {
+            installDragMirror(pos);
+        } catch (Throwable t) {
+            Port.log("FreeformFx: drag mirror install failed", t);
+        }
 
         // (A1b) 拖拽结束: 快照 live bounds + live scale
         XC_MethodHook stashHook = new XC_MethodHook() {
@@ -638,10 +656,6 @@ public final class FreeformFx {
             protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                 if (!Port.on(Port.KEY_FF_ANIM)) {
                     return;
-                }
-                if (Boolean.TRUE.equals(sCornerExtra.get())) {
-                    sCornerExtra.set(null);
-                    return; // 角落甩动已自行 stash
                 }
                 try {
                     stashLive(param.thisObject);
@@ -1082,8 +1096,15 @@ public final class FreeformFx {
             }
             int taskId = XposedHelpers.getIntField(taskInfo, "taskId");
             Live live = takeLive(taskId);
+            if (live == null) {
+                // A3 等一次性消费方可能已取走快照, 退到 A1c 拖拽镜像
+                live = peekMirror(taskId);
+            }
             if (live == null || live.bounds == null
                     || live.scale <= 0f || live.scale > 1.5f) {
+                // 无快照 = 起点只能取 WM 停靠位 (跟手前位置), 必须可见
+                Port.log("FreeformFx: fullscreen skip live="
+                        + (live == null ? "null" : "bad") + " task=" + taskId);
                 return;
             }
             Rect end = (Rect) XposedHelpers.callMethod(change, "getEndAbsBounds");
@@ -1168,6 +1189,50 @@ public final class FreeformFx {
         }
     }
 
+    /**
+     * (A1c) 拖拽过程持续写 live 镜像: onDragPositioningMove 每次覆盖该 task
+     * 的最新可见 bounds + 视觉缩放 (mCurScale*mInitialScale). 与 A1b 的一次性
+     * stash 互补 —— 镜像只被 A5 peek, 不会被 take, A3 抢先消费后仍有兜底.
+     */
+    private static void installDragMirror(Class<?> pos) {
+        XposedHelpers.findAndHookMethod(pos, "onDragPositioningMove",
+                float.class, float.class, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        if (!Port.on(Port.KEY_FF_ANIM)) {
+                            return;
+                        }
+                        try {
+                            Object positioner = param.thisObject;
+                            int taskId = positionerTaskId(positioner);
+                            if (taskId < 0) {
+                                return;
+                            }
+                            int ctrl = XposedHelpers.getIntField(positioner, "mCtrlType");
+                            if (ctrl == 0) {
+                                return; // 纯移动不覆盖, 避免污染 A5 起点
+                            }
+                            Rect src = ctrl == 8
+                                    ? (Rect) XposedHelpers.getObjectField(
+                                            positioner, "mCurrentBounds")
+                                    : (Rect) XposedHelpers.getObjectField(
+                                            positioner, "mTaskBoundsAtDragEnd");
+                            if (src == null) {
+                                return;
+                            }
+                            float scale = XposedHelpers.getFloatField(positioner, "mCurScale")
+                                    * XposedHelpers.getFloatField(positioner, "mInitialScale");
+                            synchronized (sDragMirror) {
+                                pruneMirrorLocked();
+                                sDragMirror.put(taskId, new Live(new Rect(src), scale, 0f, 0f));
+                            }
+                        } catch (Throwable t) {
+                            Port.log("FreeformFx: drag mirror failed", t);
+                        }
+                    }
+                });
+    }
+
     private static void stashLive(Object positioner) {
         int taskId = positionerTaskId(positioner);
         if (taskId < 0) {
@@ -1211,6 +1276,28 @@ public final class FreeformFx {
         Iterator<Map.Entry<Integer, Live>> it = sLive.entrySet().iterator();
         while (it.hasNext()) {
             if (now - it.next().getValue().at > STASH_TTL_MS) {
+                it.remove();
+            }
+        }
+    }
+
+    /** (A1c) 只读取镜像, 不消费; 超过 MIRROR_TTL_MS 视为无效 */
+    private static Live peekMirror(int taskId) {
+        synchronized (sDragMirror) {
+            Live live = sDragMirror.get(taskId);
+            if (live == null
+                    || SystemClock.uptimeMillis() - live.at > MIRROR_TTL_MS) {
+                return null;
+            }
+            return live;
+        }
+    }
+
+    private static void pruneMirrorLocked() {
+        long now = SystemClock.uptimeMillis();
+        Iterator<Map.Entry<Integer, Live>> it = sDragMirror.entrySet().iterator();
+        while (it.hasNext()) {
+            if (now - it.next().getValue().at > MIRROR_TTL_MS) {
                 it.remove();
             }
         }
