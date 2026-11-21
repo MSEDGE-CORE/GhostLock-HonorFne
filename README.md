@@ -78,3 +78,7 @@ post-fs-data.sh + service.sh 补丁 daemon 的 mount 行 + 清理已叠层 + 保
 
 - `exploit/`：**Apache License 2.0**（见[LICENSE](LICENSE)）
 - `ksu/`：**GPL-2.0**（见[KernelSU/LICENSE](https://github.com/tiann/KernelSU/LICENSE)）
+
+## 使用边界
+
+- 这是内核漏洞利用工具，仅用于自有设备合法安全研究，请遵守所在地法律。
